@@ -6,8 +6,9 @@ Chức năng hiện có: tạo lịch, xem danh sách, xem chi tiết, chỉnh s
 Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, múi giờ, quốc gia, địa điểm
 và mô tả (ba trường sau không bắt buộc), kèm mốc `created_at` / `updated_at`.
 Lịch có thể được tạo ở bất kỳ múi giờ nào và xem lại ở múi giờ khác mà không đổi
-thời điểm thực. Backend từ chối lịch bị trùng khung giờ với lịch đã có, và từ
-chối lịch rơi vào ngày nghỉ chính thức của quốc gia được chọn.
+thời điểm thực, và có thể kéo dài qua nửa đêm. Backend từ chối lịch bị trùng khung
+giờ với lịch đã có, và từ chối lịch rơi vào ngày nghỉ chính thức của quốc gia được
+chọn. Mỗi lịch có thể đặt một mốc nhắc trước (`reminder_minutes`).
 
 ## Tech stack
 
@@ -30,9 +31,11 @@ chối lịch rơi vào ngày nghỉ chính thức của quốc gia được ch�
 │   │   ├── models.py       # Schedule ORM model (instants stored in UTC)
 │   │   ├── schemas.py      # Pydantic schemas + timezone conversion
 │   │   ├── holiday_calendar.py # public-holiday lookup (single source)
+│   │   ├── notifications.py    # when a reminder is due, and dispatching it
 │   │   ├── routers/
 │   │   │   ├── schedules.py# CRUD endpoints under /api/schedules
-│   │   │   └── countries.py# GET /api/countries
+│   │   │   ├── countries.py# GET /api/countries
+│   │   │   └── notifications.py # /api/notifications
 │   │   └── main.py         # FastAPI app: GET /, GET /health, router
 │   ├── migrate.py          # one-off upgrade of pre-timezone databases
 │   ├── tests/              # pytest
@@ -147,6 +150,9 @@ Base URL: `http://127.0.0.1:8001`.
 | PUT    | `/api/schedules/{id}`  | Cập nhật toàn bộ một lịch                   |
 | DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
 | GET    | `/api/countries`       | Danh sách quốc gia kiểm tra được ngày nghỉ  |
+| GET    | `/api/notifications`   | Nhắc đang chờ (chưa gửi, lịch chưa bắt đầu) |
+| GET    | `/api/notifications/due` | Nhắc đã đến lúc gửi nhưng chưa gửi        |
+| POST   | `/api/notifications/dispatch` | Gửi ngay các nhắc đang đến hạn      |
 
 Schedule fields: `title` (bắt buộc, ≤200 ký tự), `start_time`, `end_time` (bắt
 buộc, `end_time` phải sau `start_time`), `timezone` (tên IANA, mặc định
@@ -225,6 +231,44 @@ curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/j
   -d '{"title":"Họp Tết","start_time":"2026-02-17T09:00:00","end_time":"2026-02-17T10:00:00","timezone":"Asia/Ho_Chi_Minh","country":"VN"}'
 # -> 409 Conflict (Lunar New Year)
 ```
+
+### Nhắc trước (notification)
+
+Thời điểm nhắc **được suy ra**, không lưu thành bản ghi riêng:
+
+```
+notify_at = start_time - reminder_minutes
+```
+
+`start_time` đang lưu là instant UTC, nên `notify_at` cũng là một instant — đúng
+dù lịch nhập ở múi giờ nào và dù lịch vắt qua nửa đêm. Chỉ có `notified_at` (lúc
+đã gửi) được lưu, để không gửi trùng.
+
+Vì thời điểm nhắc là suy ra chứ không lưu, **sửa lịch thì mốc nhắc tự dịch theo,
+xóa lịch thì mốc nhắc mất theo** — không có bảng nào cần đồng bộ. Nếu một nhắc đã
+gửi rồi mà lịch bị dời (hoặc đổi `reminder_minutes`, hoặc đổi múi giờ khiến
+instant thay đổi) thì nhắc đó được **nạp lại** để gửi cho mốc mới; sửa mỗi tiêu đề
+thì không gửi lại.
+
+Một nhắc "đang chờ" khi chưa gửi **và** lịch chưa bắt đầu; nó "đến hạn" khi
+`notify_at <= now < start_time`. Nhắc của lịch đã bắt đầu tự rơi ra khỏi danh sách
+thay vì gửi muộn — không cần dọn gì.
+
+Kênh gửi hiện tại là **một dòng log** ở phía server:
+
+```
+INFO:     app.notifications - Reminder: 'Họp nhóm' starts at 2026-05-10 02:00:00 UTC (in 30 minutes)
+```
+
+Có hai cách kích hoạt, dùng chung một hàm `dispatch_due()`:
+
+* **Poller nền** chạy trong app, mặc định mỗi 30 giây
+  (`NOTIFICATIONS_ENABLED`, `NOTIFICATION_POLL_SECONDS`);
+* **`POST /api/notifications/dispatch`** để demo ngay, không phải đợi tick.
+
+Giới hạn hiện tại: chỉ log ra server (chưa có email/push), poller nằm trong tiến
+trình app nên nhiều worker sẽ gửi trùng, và danh sách đến hạn được lọc trong
+Python nên không phù hợp với lượng lịch rất lớn.
 
 ### Lịch qua nửa đêm
 

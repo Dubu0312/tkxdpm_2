@@ -11,6 +11,8 @@ from pathlib import Path
 
 _TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="tkxdpm2-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_DIR / 'app.db'}"
+# Reminders are dispatched explicitly in tests, never by the background poller.
+os.environ["NOTIFICATIONS_ENABLED"] = "false"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

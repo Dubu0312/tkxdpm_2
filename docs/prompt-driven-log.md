@@ -677,3 +677,149 @@ kề) được **201** → chuyển múi giờ xem sang Tokyo thì chính lịch
    dùng đặt giờ kết thúc sớm hơn giờ bắt đầu — trường hợp đó vẫn báo lỗi. Cố đoán
    ý ở chiều này dễ sai hơn là giúp.
 4. Các mục tồn đọng từ Round 1–4 vẫn giữ nguyên.
+
+---
+
+## Round 6 — Add scheduling notifications
+
+**Ngày:** 2026-08-25
+**Commit:** `round 06: add scheduling notifications`
+
+### Yêu cầu
+
+Bổ sung cơ chế notification: xác định được thời điểm cần gửi thông báo dựa trên
+thời gian của lịch. Đủ rõ ràng và chạy được để demo, không cần hệ thống
+production. Phải đúng theo thời điểm thực, không sai khi lịch dùng múi giờ khác,
+lịch qua nửa đêm vẫn hoạt động, và khi lịch bị sửa/xóa thì notification liên quan
+được xử lý hợp lý.
+
+### Notification hiện hoạt động như thế nào
+
+**Quyết định cốt lõi: thời điểm nhắc được _suy ra_, không lưu thành bản ghi riêng.**
+
+```
+notify_at = start_time - reminder_minutes
+```
+
+`start_time` đang lưu là instant UTC (từ Round 3), nên `notify_at` cũng là một
+instant. Đây chính là thứ đáp ứng đồng thời cả bốn yêu cầu, và không phải bằng
+bốn đoạn code khác nhau:
+
+| Yêu cầu | Vì sao đúng |
+| --- | --- |
+| Đúng thời điểm thực | `notify_at` là instant, tính từ instant |
+| Không sai với múi giờ khác | Không dùng wall-clock ở bất kỳ đâu; hai lịch cùng giờ địa phương ở hai múi giờ có `notify_at` khác nhau, đúng như instant của chúng |
+| Lịch qua nửa đêm | Không có logic nào theo ngày; mốc nhắc có thể nằm ở ngày hôm trước (00:15 nhắc trước 30 phút → 23:45 hôm trước) |
+| Sửa/xóa lịch | Sửa → `notify_at` tự dịch theo vì nó là hàm của `start_time`; xóa → mốc nhắc mất cùng dòng dữ liệu. **Không có bảng nào cần đồng bộ.** |
+
+Đã cân nhắc phương án bảng `notifications` riêng và loại: nó buộc phải re-sync
+mỗi lần lịch đổi giờ hoặc bị xóa, tức là tự tạo ra đúng loại lỗi mà yêu cầu này
+đang muốn tránh — và tốn nhiều máy móc hơn cho một bản demo.
+
+Chỉ một thứ được **lưu**: `notified_at` (lúc đã gửi), để không gửi trùng.
+
+**Cửa sổ thời gian.** Một nhắc "đang chờ" khi chưa gửi *và* lịch chưa bắt đầu;
+nó "đến hạn" khi `notify_at <= now < start_time`. Nhắc của lịch đã bắt đầu tự rơi
+ra khỏi danh sách chứ không gửi muộn — nhắc người ta về cuộc họp họ đang dự thì vô
+nghĩa. Nhờ định nghĩa này không cần thêm trạng thái "hết hạn" hay job dọn dẹp.
+
+**Nạp lại khi bị dời.** Nếu một nhắc đã gửi mà lịch bị dời, hoặc đổi
+`reminder_minutes`, hoặc đổi múi giờ khiến instant thay đổi, thì `notified_at`
+được xóa để nhắc lại cho mốc mới. Sửa mỗi tiêu đề thì **không** gửi lại. Quy tắc
+nằm trong `notifications.reset_if_rescheduled()`, router gọi trước khi ghi đè
+giá trị cũ.
+
+**Kênh gửi (demo):** một dòng log phía server —
+`INFO: app.notifications - Reminder: 'Họp nhóm' starts at ... (in 30 minutes)`.
+Hàm `deliver()` là chỗ duy nhất cần thay khi muốn gắn email/push.
+
+**Hai cách kích hoạt, dùng chung một `dispatch_due()`:**
+* **poller nền** trong app, mặc định 30 giây (`NOTIFICATIONS_ENABLED`,
+  `NOTIFICATION_POLL_SECONDS`);
+* **`POST /api/notifications/dispatch`** để demo ngay, không phải đợi tick.
+
+Thêm `GET /api/notifications` (đang chờ) và `GET /api/notifications/due`.
+
+**Frontend:** form có ô "Nhắc trước" (mặc định 15 phút cho lịch mới), panel chi
+tiết hiện dòng `30 phút trước · 10/05/2026 08:30 · chưa gửi`, với mốc nhắc quy
+đổi sang **múi giờ đang xem**.
+
+### Một lỗi thật gặp khi làm
+
+Poller chạy đúng ngay từ đầu (`notified_at` được đặt sau 3 giây) nhưng **dòng log
+không hiện ra ở đâu cả**: uvicorn chỉ cấu hình logger của chính nó, còn logger
+`app.*` không có handler nào nên INFO rơi vào hư không. Với một tính năng mà "cái
+gửi đi" chính là dòng log, đó là lỗi làm demo vô nghĩa. Đã thêm
+`_configure_logging()` trong lifespan để logger `app` luôn có handler bất kể server
+được khởi động bằng cách nào.
+
+### Đã thay đổi
+
+**Backend**
+- `app/notifications.py` (mới) — `pending()`, `due()`, `deliver()`,
+  `dispatch_due()`, `reset_if_rescheduled()`.
+- `app/models.py` — thêm `reminder_minutes`, `notified_at`, và property
+  `notify_at` (nơi duy nhất định nghĩa mốc nhắc).
+- `app/schemas.py` — `reminder_minutes` ở input (1…40320 phút);
+  `reminder_minutes`/`notify_at`/`notified_at` ở output; thêm `NotificationRead`.
+- `app/routers/schedules.py` — gọi `reset_if_rescheduled()` khi cập nhật.
+- `app/routers/notifications.py` (mới) — 3 endpoint.
+- `app/main.py` — poller nền trong `lifespan` (huỷ gọn khi tắt app) và
+  `_configure_logging()`.
+- `app/config.py`, `.env.example` — `NOTIFICATIONS_ENABLED`,
+  `NOTIFICATION_POLL_SECONDS`.
+- `migrate.py`, `app/db.py` — bước migration thứ ba và schema guard cho hai cột mới.
+- `tests/conftest.py` — tắt poller trong test; test tự gọi dispatch.
+
+**Frontend**
+- `src/types.ts`, `src/api.ts` — các trường mới.
+- `src/format.ts` — tách `formatMinutes()` (dùng chung với `formatDuration`, và
+  nay đọc được "1 ngày").
+- `src/views.ts` — `reminderSelect()`, `reminderSummary()`, ô "Nhắc trước" trong
+  form, dòng nhắc trong panel chi tiết.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **141 passed** (108 cũ + 33 test notification) |
+| Regression timezone/conflict/holiday/overnight | `pytest` 4 file đó | **92 passed**, không sửa gì |
+| Frontend test | `npm test` | **96 passed** (84 cũ + 12 mới) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| Migration | `migrate.py` trên database thật | thêm hai cột, lần hai là no-op |
+| **Poller nền thật** | server thật, `NOTIFICATION_POLL_SECONDS=2` | `notified_at` được đặt sau 3 giây và log hiện đúng dòng `Reminder: 'Nhắc thử' ...` |
+| **End-to-end thật** | UI thật trong jsdom → backend `:8001` → SQLite | **1 passed** (chi tiết bên dưới) |
+
+33 test backend phủ: suy ra `notify_at` (kể cả lead 2 ngày), không nhắc thì không
+có mốc, cửa sổ pending/due (tương lai, đúng thời khắc, lịch đã bắt đầu, đã gửi),
+thứ tự, dispatch đánh dấu và không gửi trùng, có ghi log, cùng lead ở hai múi giờ
+cho hai instant khác nhau, mốc nhắc quy đổi theo múi giờ của lịch, mốc nhắc rơi
+sang ngày hôm trước, lịch qua nửa đêm, qua mốc DST, dời lịch/đổi lead/đổi múi giờ
+thì nạp lại, sửa mỗi tiêu đề thì không, bỏ nhắc, xóa lịch, validate ngoài khoảng,
+và cả ba endpoint.
+
+Nội dung bài E2E: form mặc định 15 phút → tạo lịch cách 2 giờ với nhắc 30 phút,
+kiểm tra `notify_at` đúng **chênh chính xác 30 phút so với start theo instant**,
+panel hiện "30 phút trước · … · chưa gửi", lịch nằm trong `pending`, chưa `due`,
+dispatch không gửi gì → đổi múi giờ xem thì dòng nhắc đổi giờ hiển thị nhưng vẫn
+"30 phút trước" → dời lịch sang 5 giờ sau và đổi lead thành 60 phút thì
+`notified_at` về null và khoảng cách thành đúng 60 phút → tạo lịch bắt đầu sau 5
+phút với lead 30 phút thì nó **đến hạn ngay**, dispatch gửi đúng nó một lần, lần
+hai không gửi gì → xóa lịch thì mốc nhắc biến khỏi danh sách.
+
+### Giới hạn hiện tại
+
+1. **Chỉ ghi log ở server.** Chưa có email, push hay hiển thị realtime trên
+   frontend — frontend cho *đặt* và *xem* mốc nhắc, nhưng không tự nổi thông báo.
+2. **Poller nằm trong tiến trình app.** Chạy nhiều worker/nhiều instance sẽ gửi
+   trùng vì không có khóa. Production cần một worker riêng (cron, Celery beat…).
+3. **Lọc `due` trong Python**, không phải trong SQL: đơn giản và dễ đọc nhưng
+   duyệt toàn bộ lịch còn nhắc chưa gửi, không phù hợp với lượng dữ liệu lớn.
+4. **Mỗi lịch chỉ một mốc nhắc.** Muốn "nhắc trước 1 ngày *và* trước 15 phút" thì
+   phải chuyển sang danh sách lead time (hoặc bảng riêng).
+5. **Nhắc bị bỏ qua khi server tắt sẽ không gửi bù** nếu lúc bật lại lịch đã bắt
+   đầu — đúng theo định nghĩa cửa sổ, nhưng nghĩa là không có bảo đảm gửi.
+6. **`notified_at` chỉ ghi lúc gửi**, không ghi kết quả gửi (thành công/thất bại)
+   vì kênh hiện tại không thể thất bại.
+7. Các mục tồn đọng từ Round 1–5 vẫn giữ nguyên.

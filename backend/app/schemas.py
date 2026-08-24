@@ -77,6 +77,12 @@ class ScheduleInput(ScheduleFields):
         max_length=2,
         description="ISO 3166-1 alpha-2 country whose public holidays apply",
     )
+    reminder_minutes: int | None = Field(
+        default=None,
+        ge=1,
+        le=40320,  # four weeks
+        description="Minutes before the start to send a reminder; omit for none",
+    )
 
     @field_validator("timezone")
     @classmethod
@@ -131,13 +137,20 @@ class ScheduleRead(ScheduleFields):
     end_time: datetime
     timezone: str
     country: str | None
+    reminder_minutes: int | None
+    #: Instant the reminder fires, rendered in the schedule's timezone.
+    notify_at: datetime | None
+    #: When the reminder was delivered (UTC); null while it is still pending.
+    notified_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
-    @field_serializer("start_time", "end_time", "created_at", "updated_at")
-    def _explicit_offset(self, value: datetime) -> str:
+    @field_serializer(
+        "start_time", "end_time", "notify_at", "notified_at", "created_at", "updated_at"
+    )
+    def _explicit_offset(self, value: datetime | None) -> str | None:
         """Render every instant with a numeric offset, never the bare "Z" form."""
-        return value.isoformat()
+        return None if value is None else value.isoformat()
 
     @classmethod
     def from_model(cls, schedule) -> "ScheduleRead":
@@ -149,8 +162,13 @@ class ScheduleRead(ScheduleFields):
             location=schedule.location,
             timezone=schedule.timezone,
             country=schedule.country,
+            reminder_minutes=schedule.reminder_minutes,
             start_time=from_utc(schedule.start_time, tz),
             end_time=from_utc(schedule.end_time, tz),
+            notify_at=None if schedule.notify_at is None else from_utc(schedule.notify_at, tz),
+            notified_at=(
+                None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
+            ),
             created_at=schedule.created_at.replace(tzinfo=UTC),
             updated_at=schedule.updated_at.replace(tzinfo=UTC),
         )
@@ -185,3 +203,40 @@ class CountryRead(BaseModel):
 
     code: str
     name: str
+
+
+class NotificationRead(BaseModel):
+    """A reminder, identified by the schedule it belongs to.
+
+    There is no notification record of its own — ``notify_at`` is derived from
+    the schedule, so this view is always consistent with it.
+    """
+
+    schedule_id: int
+    title: str
+    timezone: str
+    reminder_minutes: int
+    #: Instant the reminder fires and the schedule starts, in its own timezone.
+    notify_at: datetime
+    start_time: datetime
+    #: When it was delivered (UTC); null while still pending.
+    notified_at: datetime | None
+
+    @field_serializer("notify_at", "start_time", "notified_at")
+    def _explicit_offset(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+    @classmethod
+    def from_model(cls, schedule) -> "NotificationRead":
+        tz = resolve_timezone(schedule.timezone)
+        return cls(
+            schedule_id=schedule.id,
+            title=schedule.title,
+            timezone=schedule.timezone,
+            reminder_minutes=schedule.reminder_minutes,
+            notify_at=from_utc(schedule.notify_at, tz),
+            start_time=from_utc(schedule.start_time, tz),
+            notified_at=(
+                None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
+            ),
+        )

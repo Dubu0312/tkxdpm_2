@@ -7,7 +7,7 @@ schedule's own timezone is kept separately in ``timezone`` (IANA name) so the
 wall-clock time the user typed can be reproduced exactly.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import CheckConstraint, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -40,7 +40,23 @@ class Schedule(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     #: ISO 3166-1 alpha-2 country whose public holidays apply; None = no check.
     country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    #: Minutes before the start to send a reminder; None = no reminder.
+    reminder_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When the reminder was actually delivered (UTC); None = not sent yet.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
+
+    @property
+    def notify_at(self) -> datetime | None:
+        """Instant the reminder is due (UTC), derived from the start time.
+
+        Deriving rather than storing it is what keeps reminders honest: editing
+        the schedule moves the reminder with it, and deleting the schedule takes
+        the reminder with it. There is nothing to keep in sync.
+        """
+        if self.reminder_minutes is None:
+            return None
+        return self.start_time - timedelta(minutes=self.reminder_minutes)

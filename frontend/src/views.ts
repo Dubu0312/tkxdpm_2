@@ -4,6 +4,7 @@ import {
   formatDate,
   formatDay,
   formatDuration,
+  formatMinutes,
   formatRange,
   formatTime,
   listTimezones,
@@ -99,6 +100,20 @@ export function renderList(
   return container;
 }
 
+/**
+ * "15 phút trước · 10/05/2026 08:45 · đã gửi" — when the reminder fires, shown
+ * in the timezone being viewed, plus whether it has already gone out.
+ */
+export function reminderSummary(schedule: Schedule, viewTimezone: string): string {
+  if (schedule.reminder_minutes === null || schedule.notify_at === null) return "—";
+
+  const when =
+    `${formatDate(schedule.notify_at, viewTimezone)} ` +
+    `${formatTime(schedule.notify_at, viewTimezone)}`;
+  const status = schedule.notified_at !== null ? "đã gửi" : "chưa gửi";
+  return `${formatMinutes(schedule.reminder_minutes)} trước · ${when} · ${status}`;
+}
+
 /** "Vietnam (VN)" when the country list is loaded, otherwise just the code. */
 export function countryLabel(code: string, countries: Country[]): string {
   const match = countries.find((country) => country.code === code);
@@ -141,6 +156,7 @@ export function renderDetail(
   const addFact = (label: string, value: string) => {
     facts.append(el("dt", undefined, label), el("dd", undefined, value));
   };
+  addFact("Nhắc trước", reminderSummary(schedule, viewTimezone));
   addFact("Múi giờ", schedule.timezone);
   addFact("Quốc gia", schedule.country ? countryLabel(schedule.country, countries) : "—");
   addFact("Địa điểm", schedule.location || "—");
@@ -207,6 +223,34 @@ export function countrySelect(countries: Country[], selected: string | null): HT
   return select;
 }
 
+/** Lead times offered in the form; the value is minutes before the start. */
+const REMINDER_CHOICES = [5, 10, 15, 30, 60, 120, 1440];
+
+/** Default lead time for a new schedule. */
+const DEFAULT_REMINDER = 15;
+
+/** A <select> of reminder lead times, with an explicit "no reminder" option. */
+export function reminderSelect(selected: number | null): HTMLSelectElement {
+  const select = document.createElement("select");
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— Không nhắc —";
+  select.append(none);
+
+  const choices = selected !== null && !REMINDER_CHOICES.includes(selected)
+    ? [...REMINDER_CHOICES, selected].sort((a, b) => a - b)
+    : REMINDER_CHOICES;
+
+  for (const minutes of choices) {
+    const option = document.createElement("option");
+    option.value = String(minutes);
+    option.textContent = `${formatMinutes(minutes)} trước`;
+    select.append(option);
+  }
+  select.value = selected === null ? "" : String(selected);
+  return select;
+}
+
 /** Values the form starts with: a rejected draft wins over the stored schedule. */
 function initialValues(
   schedule: Schedule | null,
@@ -223,6 +267,7 @@ function initialValues(
       end_time: toInputValue(schedule.end_time),
       timezone: schedule.timezone,
       country: schedule.country,
+      reminder_minutes: schedule.reminder_minutes,
     };
   }
   return {
@@ -233,6 +278,7 @@ function initialValues(
     end_time: nowInputValue(120, defaultTimezone),
     timezone: defaultTimezone,
     country: null,
+    reminder_minutes: DEFAULT_REMINDER,
   };
 }
 
@@ -278,12 +324,14 @@ export function renderForm(
 
   const timezone = timezoneSelect(values.timezone);
   const country = countrySelect(countries, values.country);
+  const reminder = reminderSelect(values.reminder_minutes);
 
   form.append(
     field("Tiêu đề *", title),
     field("Múi giờ *", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này."),
     field("Bắt đầu *", start),
     field("Kết thúc *", end, "Phải sau thời gian bắt đầu; có thể rơi vào ngày hôm sau."),
+    field("Nhắc trước", reminder, "Tính từ thời điểm bắt đầu của lịch."),
     field("Quốc gia", country, "Không thể đặt lịch vào ngày nghỉ chính thức của quốc gia này."),
     field("Địa điểm", location),
     field("Mô tả", description),
@@ -319,6 +367,7 @@ export function renderForm(
       end_time: end.value,
       timezone: timezone.value,
       country: country.value || null,
+      reminder_minutes: reminder.value === "" ? null : Number(reminder.value),
     });
   });
 

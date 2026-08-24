@@ -75,6 +75,14 @@ def _add_country_column() -> None:
     print("Added the 'country' column (existing schedules keep no country).")
 
 
+def _add_reminder_columns() -> None:
+    """Add the nullable columns used by reminder notifications."""
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE schedules ADD COLUMN reminder_minutes INTEGER"))
+        conn.execute(text("ALTER TABLE schedules ADD COLUMN notified_at DATETIME"))
+    print("Added the reminder columns (existing schedules keep no reminder).")
+
+
 def migrate(timezone_name: str) -> int:
     """Apply every pending upgrade. Returns the number of rows converted to UTC."""
     columns = _columns()
@@ -89,6 +97,9 @@ def migrate(timezone_name: str) -> int:
         applied = True
     if "country" not in columns:
         _add_country_column()
+        applied = True
+    if "reminder_minutes" not in columns:
+        _add_reminder_columns()
         applied = True
 
     if not applied:

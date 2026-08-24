@@ -199,14 +199,19 @@ export function formatRange(startIso: string, endIso: string, timeZone: string):
   );
 }
 
-/** Rounded real duration such as "1 giờ 30 phút" — independent of any timezone. */
-export function formatDuration(startIso: string, endIso: string): string {
-  const minutes = Math.round(
-    (parseInstant(endIso).getTime() - parseInstant(startIso).getTime()) / 60000,
-  );
+/** A span of minutes in words: "45 phút", "2 giờ", "1 giờ 30 phút", "1 ngày". */
+export function formatMinutes(minutes: number): string {
+  if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440} ngày`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   if (hours === 0) return `${rest} phút`;
   if (rest === 0) return `${hours} giờ`;
   return `${hours} giờ ${rest} phút`;
+}
+
+/** Rounded real duration — independent of any timezone. */
+export function formatDuration(startIso: string, endIso: string): string {
+  return formatMinutes(
+    Math.round((parseInstant(endIso).getTime() - parseInstant(startIso).getTime()) / 60000),
+  );
 }

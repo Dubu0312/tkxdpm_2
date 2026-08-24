@@ -5,6 +5,8 @@ import { ApiError } from "./api";
 import {
   countryLabel,
   countrySelect,
+  reminderSelect,
+  reminderSummary,
   renderDetail,
   renderError,
   renderForm,
@@ -25,6 +27,9 @@ function schedule(overrides: Partial<Schedule> = {}): Schedule {
     end_time: "2026-09-01T10:30:00+09:00",
     timezone: TOKYO,
     country: null,
+    reminder_minutes: null,
+    notify_at: null,
+    notified_at: null,
     created_at: "2026-08-25T08:00:00+00:00",
     updated_at: "2026-08-25T08:00:00+00:00",
     ...overrides,
@@ -94,8 +99,8 @@ describe("renderDetail", () => {
       { onEdit: () => {}, onDelete: () => {} },
       TOKYO,
     );
-    // Facts are timezone, country, then the two optional fields.
-    expect([...node.querySelectorAll("dd")].map((dd) => dd.textContent).slice(2, 4)).toEqual([
+    // Facts are reminder, timezone, country, then the two optional fields.
+    expect([...node.querySelectorAll("dd")].map((dd) => dd.textContent).slice(3, 5)).toEqual([
       "—",
       "—",
     ]);
@@ -137,6 +142,7 @@ describe("renderForm", () => {
       end_time: "2026-09-01T10:30",
       timezone: TOKYO,
       country: null,
+      reminder_minutes: null,
     });
   });
 
@@ -198,6 +204,7 @@ describe("renderForm draft", () => {
       end_time: "2026-09-05T15:00",
       timezone: SAIGON,
       country: "VN",
+      reminder_minutes: 30,
     };
     const form = renderForm(schedule(), { onSubmit: () => {}, onCancel: () => {} }, draft);
     const inputs = form.querySelectorAll<HTMLInputElement>("input");
@@ -329,7 +336,7 @@ describe("country selection", () => {
       TOKYO,
       COUNTRIES,
     );
-    expect(form.querySelectorAll<HTMLSelectElement>("select")[1]!.value).toBe("US");
+    expect(form.querySelectorAll<HTMLSelectElement>("select")[2]!.value).toBe("US");
     form.dispatchEvent(new Event("submit", { cancelable: true }));
     expect(onSubmit.mock.calls[0]![0].country).toBe("US");
   });
@@ -344,10 +351,10 @@ describe("country selection", () => {
   it("shows the country in the detail panel", () => {
     const handlers = { onEdit: () => {}, onDelete: () => {} };
     const withCountry = renderDetail(schedule({ country: "VN" }), handlers, TOKYO, COUNTRIES);
-    expect([...withCountry.querySelectorAll("dd")][1]!.textContent).toBe("Vietnam (VN)");
+    expect([...withCountry.querySelectorAll("dd")][2]!.textContent).toBe("Vietnam (VN)");
 
     const without = renderDetail(schedule(), handlers, TOKYO, COUNTRIES);
-    expect([...without.querySelectorAll("dd")][1]!.textContent).toBe("—");
+    expect([...without.querySelectorAll("dd")][2]!.textContent).toBe("—");
   });
 });
 
@@ -539,5 +546,94 @@ describe("the form keeps the duration when the start moves", () => {
 
     expect(onSubmit.mock.calls[0]![0].start_time).toBe("2026-03-10T23:30");
     expect(onSubmit.mock.calls[0]![0].end_time).toBe("2026-03-11T00:30");
+  });
+});
+
+describe("reminders", () => {
+  const withReminder = (overrides = {}) =>
+    schedule({
+      timezone: SAIGON,
+      start_time: "2026-05-10T09:00:00+07:00",
+      end_time: "2026-05-10T10:00:00+07:00",
+      reminder_minutes: 30,
+      notify_at: "2026-05-10T08:30:00+07:00",
+      ...overrides,
+    });
+
+  it("offers an explicit no-reminder option first", () => {
+    const select = reminderSelect(null);
+    expect(select.value).toBe("");
+    expect(select.options[0]!.textContent).toContain("Không nhắc");
+    expect([...select.options].map((o) => o.value)).toContain("15");
+  });
+
+  it("preselects the schedule's lead time and labels it in words", () => {
+    const select = reminderSelect(30);
+    expect(select.value).toBe("30");
+    expect([...select.options].find((o) => o.value === "1440")?.textContent).toBe("1 ngày trước");
+  });
+
+  it("keeps a lead time that is not one of the presets", () => {
+    const select = reminderSelect(7);
+    expect(select.value).toBe("7");
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ["", "5", "7", "10", "15", "30", "60", "120", "1440"],
+    );
+  });
+
+  it("defaults a new schedule to a 15 minute reminder", () => {
+    const form = renderForm(null, { onSubmit: () => {}, onCancel: () => {} }, null, SAIGON, []);
+    expect(form.querySelectorAll<HTMLSelectElement>("select")[1]!.value).toBe("15");
+  });
+
+  it("submits the chosen lead time, and null for no reminder", () => {
+    const onSubmit = vi.fn();
+    const form = renderForm(withReminder(), { onSubmit, onCancel: () => {} }, null, SAIGON, []);
+    const reminder = form.querySelectorAll<HTMLSelectElement>("select")[1]!;
+    expect(reminder.value).toBe("30");
+
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(onSubmit.mock.calls[0]![0].reminder_minutes).toBe(30);
+
+    reminder.value = "";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(onSubmit.mock.calls[1]![0].reminder_minutes).toBeNull();
+  });
+
+  it("summarises when the reminder fires and whether it went out", () => {
+    const pending = reminderSummary(withReminder(), SAIGON);
+    expect(pending).toContain("30 phút trước");
+    expect(pending).toContain("08:30");
+    expect(pending).toContain("chưa gửi");
+
+    const sent = reminderSummary(withReminder({ notified_at: "2026-05-10T01:30:00+00:00" }), SAIGON);
+    expect(sent).toContain("đã gửi");
+  });
+
+  it("shows the reminder moment in the timezone being viewed", () => {
+    // 08:30 in Saigon is 10:30 in Tokyo — the same instant.
+    expect(reminderSummary(withReminder(), TOKYO)).toContain("10:30");
+  });
+
+  it("says nothing when there is no reminder", () => {
+    expect(reminderSummary(schedule(), SAIGON)).toBe("—");
+  });
+
+  it("puts the reminder first in the detail panel facts", () => {
+    const panel = renderDetail(withReminder(), { onEdit: () => {}, onDelete: () => {} }, SAIGON);
+    expect([...panel.querySelectorAll("dt")][0]!.textContent).toBe("Nhắc trước");
+    expect([...panel.querySelectorAll("dd")][0]!.textContent).toContain("30 phút trước");
+  });
+
+  it("handles a reminder that falls on the previous local day", () => {
+    // A 00:15 start with a 30 minute lead fires at 23:45 the day before.
+    const overnight = withReminder({
+      start_time: "2026-05-11T00:15:00+07:00",
+      end_time: "2026-05-11T01:15:00+07:00",
+      notify_at: "2026-05-10T23:45:00+07:00",
+    });
+    const summary = reminderSummary(overnight, SAIGON);
+    expect(summary).toContain("10/05/2026");
+    expect(summary).toContain("23:45");
   });
 });

@@ -10,6 +10,7 @@ const INPUT = {
   end_time: "2026-09-01T10:00:00",
   timezone: "Asia/Tokyo",
   country: null,
+  reminder_minutes: null,
 };
 
 function mockFetch(response: Response | Error) {
@@ -71,6 +72,9 @@ describe("api client", () => {
       end_time: "2026-09-01T10:00:00+07:00",
       timezone: "Asia/Ho_Chi_Minh",
       country: null,
+      reminder_minutes: null,
+      notify_at: null,
+      notified_at: null,
       created_at: "2026-08-25T08:00:00+00:00",
       updated_at: "2026-08-25T08:00:00+00:00",
     };

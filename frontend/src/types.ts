@@ -10,6 +10,12 @@ export interface Schedule {
   timezone: string;
   /** ISO 3166-1 alpha-2 country whose public holidays apply; null = no check. */
   country: string | null;
+  /** Minutes before the start to remind; null = no reminder. */
+  reminder_minutes: number | null;
+  /** Instant the reminder fires, in the schedule's own timezone; null if none. */
+  notify_at: string | null;
+  /** When the reminder was delivered (UTC); null while still pending. */
+  notified_at: string | null;
   /** ISO-8601 in UTC. */
   created_at: string;
   updated_at: string;
@@ -24,6 +30,7 @@ export interface ScheduleInput {
   end_time: string;
   timezone: string;
   country: string | null;
+  reminder_minutes: number | null;
 }
 
 /** A country the backend can check public holidays for. */

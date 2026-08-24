@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import holiday_calendar
+from app import holiday_calendar, notifications
 from app.db import get_session
 from app.models import Schedule
 from app.schemas import (
@@ -158,6 +158,8 @@ def update_schedule(
     schedule = _get_or_404(session, schedule_id)
     _reject_holidays(payload)
     _reject_conflicts(session, payload.start_time, payload.end_time, exclude_id=schedule_id)
+    # Compare against the stored values before overwriting them.
+    notifications.reset_if_rescheduled(schedule, payload.start_time, payload.reminder_minutes)
     for field, value in payload.to_columns().items():
         setattr(schedule, field, value)
     session.commit()

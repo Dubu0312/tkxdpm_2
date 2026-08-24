@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # IANA timezone used when a request does not name one.
     default_timezone: str = "Asia/Ho_Chi_Minh"
 
+    # Background reminder dispatch. Set notifications_enabled=false to turn the
+    # poller off (tests do this and dispatch explicitly instead).
+    notifications_enabled: bool = True
+    notification_poll_seconds: int = 30
+
     @field_validator("database_url")
     @classmethod
     def _absolutise_sqlite_path(cls, value: str) -> str:

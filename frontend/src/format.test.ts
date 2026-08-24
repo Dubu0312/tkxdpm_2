@@ -7,6 +7,7 @@ import {
   dayOffsetInZone,
   formatDate,
   formatDuration,
+  formatMinutes,
   formatRange,
   formatTime,
   listTimezones,
@@ -177,5 +178,19 @@ describe("wall-clock arithmetic for the form", () => {
   it("is unaffected by the machine's own timezone or DST", () => {
     // Parsed as UTC on purpose: a DST night in the local zone must not shift it.
     expect(shiftWallClock("2026-03-08T01:30", 60)).toBe("2026-03-08T02:30");
+  });
+});
+
+describe("formatMinutes", () => {
+  it("reads minutes, hours and whole days", () => {
+    expect(formatMinutes(45)).toBe("45 phút");
+    expect(formatMinutes(60)).toBe("1 giờ");
+    expect(formatMinutes(90)).toBe("1 giờ 30 phút");
+    expect(formatMinutes(1440)).toBe("1 ngày");
+    expect(formatMinutes(2880)).toBe("2 ngày");
+  });
+
+  it("falls back to hours for a partial day", () => {
+    expect(formatMinutes(1500)).toBe("25 giờ");
   });
 });
