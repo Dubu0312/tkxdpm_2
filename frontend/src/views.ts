@@ -1,4 +1,15 @@
-import { formatDate, formatDuration, formatRange, formatTime, nowInputValue, toInputValue } from "./format";
+import {
+  dayKeyInZone,
+  formatDate,
+  formatDuration,
+  formatRange,
+  formatTime,
+  listTimezones,
+  nowInputValue,
+  offsetLabel,
+  sameZone,
+  toInputValue,
+} from "./format";
 import type { Schedule, ScheduleInput } from "./types";
 
 import type { ApiError } from "./api";
@@ -14,11 +25,15 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** Groups schedules by calendar day, preserving the backend's start-time order. */
-function groupByDay(schedules: Schedule[]): [string, Schedule[]][] {
+/**
+ * Groups schedules by the calendar day they fall on *in the view timezone*,
+ * preserving the backend's start-instant order. A schedule can therefore land
+ * on a different day than the one its own timezone shows.
+ */
+function groupByDay(schedules: Schedule[], viewTimezone: string): [string, Schedule[]][] {
   const groups = new Map<string, Schedule[]>();
   for (const schedule of schedules) {
-    const day = schedule.start_time.slice(0, 10);
+    const day = dayKeyInZone(schedule.start_time, viewTimezone);
     const bucket = groups.get(day);
     if (bucket) bucket.push(schedule);
     else groups.set(day, [schedule]);
@@ -30,6 +45,7 @@ export function renderList(
   schedules: Schedule[],
   selectedId: number | null,
   onSelect: (id: number) => void,
+  viewTimezone: string,
 ): HTMLElement {
   const container = el("div", "list");
 
@@ -38,17 +54,31 @@ export function renderList(
     return container;
   }
 
-  for (const [day, items] of groupByDay(schedules)) {
-    container.append(el("h3", "day", formatDate(`${day}T00:00:00`)));
+  for (const [day, items] of groupByDay(schedules, viewTimezone)) {
+    container.append(el("h3", "day", formatDate(`${day}T12:00:00Z`, "UTC")));
     for (const schedule of items) {
       const card = el("button", "card");
       card.type = "button";
       if (schedule.id === selectedId) card.classList.add("card--active");
       card.setAttribute("aria-current", schedule.id === selectedId ? "true" : "false");
 
-      card.append(el("span", "card__time", `${formatTime(schedule.start_time)} – ${formatTime(schedule.end_time)}`));
+      card.append(
+        el(
+          "span",
+          "card__time",
+          `${formatTime(schedule.start_time, viewTimezone)} – ` +
+            `${formatTime(schedule.end_time, viewTimezone)}`,
+        ),
+      );
       card.append(el("span", "card__title", schedule.title));
-      if (schedule.location) card.append(el("span", "card__meta", schedule.location));
+
+      const meta = [
+        schedule.location,
+        sameZone(schedule.timezone, viewTimezone) ? null : schedule.timezone,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      if (meta) card.append(el("span", "card__meta", meta));
 
       card.addEventListener("click", () => onSelect(schedule.id));
       container.append(card);
@@ -60,19 +90,46 @@ export function renderList(
 export function renderDetail(
   schedule: Schedule,
   handlers: { onEdit: () => void; onDelete: () => void },
+  viewTimezone: string,
 ): HTMLElement {
   const panel = el("article", "panel");
   panel.append(el("h2", undefined, schedule.title));
-  panel.append(el("p", "panel__when", formatRange(schedule.start_time, schedule.end_time)));
-  panel.append(el("p", "panel__duration", `Thời lượng: ${formatDuration(schedule.start_time, schedule.end_time)}`));
+  panel.append(
+    el("p", "panel__when", formatRange(schedule.start_time, schedule.end_time, viewTimezone)),
+  );
+  panel.append(
+    el(
+      "p",
+      "panel__duration",
+      `${viewTimezone} (${offsetLabel(schedule.start_time, viewTimezone)}) · ` +
+        `Thời lượng: ${formatDuration(schedule.start_time, schedule.end_time)}`,
+    ),
+  );
+
+  // The same instant shown in the timezone the schedule was created in.
+  if (!sameZone(schedule.timezone, viewTimezone)) {
+    panel.append(
+      el(
+        "p",
+        "panel__origin",
+        `Giờ gốc (${schedule.timezone}): ` +
+          formatRange(schedule.start_time, schedule.end_time, schedule.timezone),
+      ),
+    );
+  }
 
   const facts = el("dl", "facts");
   const addFact = (label: string, value: string) => {
     facts.append(el("dt", undefined, label), el("dd", undefined, value));
   };
+  addFact("Múi giờ", schedule.timezone);
   addFact("Địa điểm", schedule.location || "—");
   addFact("Mô tả", schedule.description || "—");
-  addFact("Tạo lúc", `${formatDate(schedule.created_at)} ${formatTime(schedule.created_at)}`);
+  addFact(
+    "Tạo lúc",
+    `${formatDate(schedule.created_at, viewTimezone)} ` +
+      `${formatTime(schedule.created_at, viewTimezone)}`,
+  );
   panel.append(facts);
 
   const actions = el("div", "actions");
@@ -96,8 +153,28 @@ function field(label: string, control: HTMLElement, hint?: string): HTMLElement 
   return wrapper;
 }
 
+/** A <select> listing every IANA timezone, with `selected` preselected. */
+export function timezoneSelect(selected: string): HTMLSelectElement {
+  const select = document.createElement("select");
+  const zones = listTimezones();
+  // Keep a zone the runtime does not list under that exact name (an alias such as
+  // "Asia/Ho_Chi_Minh", or one stored earlier) selectable, spelled as it was given.
+  for (const zone of zones.includes(selected) ? zones : [selected, ...zones]) {
+    const option = document.createElement("option");
+    option.value = zone;
+    option.textContent = zone;
+    select.append(option);
+  }
+  select.value = selected;
+  return select;
+}
+
 /** Values the form starts with: a rejected draft wins over the stored schedule. */
-function initialValues(schedule: Schedule | null, draft: ScheduleInput | null): ScheduleInput {
+function initialValues(
+  schedule: Schedule | null,
+  draft: ScheduleInput | null,
+  defaultTimezone: string,
+): ScheduleInput {
   if (draft) return draft;
   if (schedule) {
     return {
@@ -106,14 +183,16 @@ function initialValues(schedule: Schedule | null, draft: ScheduleInput | null): 
       location: schedule.location,
       start_time: toInputValue(schedule.start_time),
       end_time: toInputValue(schedule.end_time),
+      timezone: schedule.timezone,
     };
   }
   return {
     title: "",
     description: null,
     location: null,
-    start_time: nowInputValue(60),
-    end_time: nowInputValue(120),
+    start_time: nowInputValue(60, defaultTimezone),
+    end_time: nowInputValue(120, defaultTimezone),
+    timezone: defaultTimezone,
   };
 }
 
@@ -121,8 +200,9 @@ export function renderForm(
   schedule: Schedule | null,
   handlers: { onSubmit: (input: ScheduleInput) => void; onCancel: () => void },
   draft: ScheduleInput | null = null,
+  defaultTimezone: string = "UTC",
 ): HTMLElement {
-  const values = initialValues(schedule, draft);
+  const values = initialValues(schedule, draft, defaultTimezone);
   const form = el("form", "panel form");
   form.append(el("h2", undefined, schedule ? "Chỉnh sửa lịch" : "Tạo lịch mới"));
 
@@ -155,8 +235,11 @@ export function renderForm(
   description.value = values.description ?? "";
   description.placeholder = "Ghi chú thêm (không bắt buộc)";
 
+  const timezone = timezoneSelect(values.timezone);
+
   form.append(
     field("Tiêu đề *", title),
+    field("Múi giờ *", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này."),
     field("Bắt đầu *", start),
     field("Kết thúc *", end, "Phải sau thời gian bắt đầu."),
     field("Địa điểm", location),
@@ -180,6 +263,7 @@ export function renderForm(
       location: location.value.trim() || null,
       start_time: start.value,
       end_time: end.value,
+      timezone: timezone.value,
     });
   });
 
@@ -193,7 +277,7 @@ export function renderPlaceholder(text: string): HTMLElement {
 }
 
 
-export function renderError(error: ApiError): HTMLElement {
+export function renderError(error: ApiError, viewTimezone: string = "UTC"): HTMLElement {
   const box = el("div", "error__body");
 
   if (error.conflicts.length === 0) {
@@ -214,7 +298,11 @@ export function renderError(error: ApiError): HTMLElement {
   const list = el("ul", "error__list");
   for (const conflict of error.conflicts) {
     list.append(
-      el("li", undefined, `${conflict.title} — ${formatRange(conflict.start_time, conflict.end_time)}`),
+      el(
+        "li",
+        undefined,
+        `${conflict.title} — ${formatRange(conflict.start_time, conflict.end_time, viewTimezone)}`,
+      ),
     );
   }
   box.append(list);

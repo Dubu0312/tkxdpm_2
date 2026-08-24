@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Frontend dev server origin, allowed through CORS.
     cors_origins: str = "http://localhost:5173"
 
+    # IANA timezone used when a request does not name one.
+    default_timezone: str = "Asia/Ho_Chi_Minh"
+
     @field_validator("database_url")
     @classmethod
     def _absolutise_sqlite_path(cls, value: str) -> str:

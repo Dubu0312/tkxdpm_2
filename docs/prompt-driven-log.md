@@ -308,3 +308,130 @@ lịch đầu tiên.
 4. Các mục còn tồn tại của Round 1 (chưa có E2E test cố định trong repo, chưa có
    Alembic, chưa phân trang/tìm kiếm, chưa xác thực người dùng, chỉ hỗ trợ một
    múi giờ, port mặc định 8001) vẫn giữ nguyên.
+
+---
+
+## Round 3 — Add timezone support
+
+**Ngày:** 2026-08-25
+**Commit:** `round 03: add timezone support`
+
+### Yêu cầu
+
+Cho phép tạo và xem lịch ở các múi giờ khác nhau. Thời gian phải nhất quán giữa
+frontend, API, backend và SQLite; một lịch phải giữ nguyên thời điểm thực khi
+được xem ở múi giờ khác. Conflict detection đã có phải tiếp tục chính xác khi các
+lịch dùng múi giờ khác nhau.
+
+### Quyết định kỹ thuật (tóm tắt)
+
+| Câu hỏi | Quyết định |
+| --- | --- |
+| **Lưu datetime thế nào** | Lưu **UTC** dưới dạng naive datetime trong SQLite (SQLite không có kiểu timezone-aware). Áp dụng cho cả `start_time`, `end_time`, `created_at`, `updated_at`. |
+| **Lưu timezone thế nào** | Cột riêng `timezone` chứa **tên IANA** (`Asia/Tokyo`), không lưu offset. Offset thay đổi theo DST nên lưu offset sẽ sai; tên vùng thì không. |
+| **Format qua API** | ISO-8601 **kèm offset tường minh**: `2026-09-01T09:00:00+09:00`. Response render theo múi giờ của chính lịch đó nên giữ đúng giờ người dùng đã nhập; `created_at`/`updated_at` render `+00:00`. |
+| **Convert ở đâu** | Chỉ ở backend, trong tầng schema. Input naive được hiểu theo `timezone` của request; input có offset thì offset quyết định thời điểm. Frontend **không** làm phép tính offset nào. |
+| **Hiển thị ở frontend** | `Intl.DateTimeFormat` với `timeZone` — trình duyệt giữ luật DST. Có ô chọn "Xem theo" ở thanh trên, mặc định là múi giờ của trình duyệt; đổi ô này chỉ render lại, không đụng dữ liệu. |
+
+Lý do chọn "UTC + tên vùng" thay vì chỉ lưu UTC: chỉ có UTC thì mất thông tin
+người dùng đã nhập giờ theo vùng nào, và khi sửa lại lịch sẽ không tái tạo được
+đúng wall-clock ban đầu (đặc biệt quanh mốc DST). Ngược lại, chỉ lưu giờ địa
+phương + tên vùng thì mọi so sánh đều phải convert lúc query — chậm và dễ sai.
+
+Một hệ quả quan trọng: **conflict detection không cần sửa logic**. Nó vốn so
+sánh `start_time`/`end_time`, mà hai cột này giờ là UTC — nên tự động đúng giữa
+các múi giờ và qua mốc DST.
+
+### Đã thay đổi
+
+**Backend**
+- `app/models.py` — thêm cột `timezone`; ghi rõ quy ước lưu UTC; `utcnow()` thay
+  cho `datetime.now()` địa phương.
+- `app/schemas.py` — tách `ScheduleFields` (không có ngữ nghĩa thời gian) khỏi
+  `ScheduleInput` (validate + convert sang UTC) và `ScheduleRead` (render theo
+  múi giờ của lịch). Thêm `resolve_timezone` / `to_utc` / `from_utc` và
+  `field_serializer` ép offset dạng số (mặc định pydantic in UTC thành `Z`, làm
+  các vùng offset 0 như London mùa đông trông khác phần còn lại).
+- `app/routers/schedules.py` — dựng response bằng `ScheduleRead.from_model`;
+  logic tìm xung đột giữ nguyên, chỉ bổ sung tài liệu vì nay so sánh trên UTC.
+- `app/config.py`, `.env.example` — thêm `DEFAULT_TIMEZONE`.
+- `app/db.py` — `init_db()` kiểm tra bảng cũ và báo lỗi rõ ràng nếu thiếu cột
+  `timezone`, thay vì đọc sai dữ liệu trong im lặng.
+- `migrate.py` (mới) — nâng cấp database tạo trước Round 3: thêm cột `timezone`,
+  đổi các mốc thời gian cũ từ giờ địa phương sang UTC. Idempotent. Đây là giải
+  pháp tạm cho đúng một lần đổi schema; Alembic vẫn là hướng đúng về sau.
+- `requirements.in/.txt` — thêm `tzdata` để `zoneinfo` chạy được cả trên máy
+  không có tzdb hệ thống (Windows, image tối giản).
+- `tests/conftest.py` — trỏ `DATABASE_URL` sang thư mục tạm **trước khi** import
+  app, nên bộ test không còn đụng vào `data/app.db` của máy dev.
+
+**Frontend**
+- `src/format.ts` — viết lại theo hướng timezone-aware: `dayKeyInZone`,
+  `wallClockInZone`, `formatTime/formatDate/formatRange` nhận tham số vùng,
+  `offsetLabel`, `browserTimezone`, `listTimezones`, `canonicalTimezone`,
+  `sameZone`.
+- `src/views.ts` — danh sách nhóm theo ngày **của múi giờ đang xem**; thẻ lịch
+  ghi thêm tên vùng khi khác vùng đang xem; panel chi tiết hiện thêm dòng "Giờ
+  gốc" theo vùng của lịch; form có ô chọn múi giờ (`timezoneSelect`).
+- `src/main.ts` — thêm `state.viewTimezone` và ô chọn ở thanh trên.
+- `src/types.ts`, `src/api.ts`, `index.html`, `style.css` — cập nhật theo.
+
+### Vấn đề gặp phải khi làm
+
+- **Bí danh múi giờ.** `Intl.supportedValuesOf("timeZone")` chỉ trả về id chuẩn
+  hóa: runtime này liệt kê `Asia/Saigon` chứ không có `Asia/Ho_Chi_Minh` (hai tên
+  của cùng một vùng), và cũng không có `UTC`. Nếu so sánh chuỗi thuần thì một
+  lịch tạo bằng giá trị mặc định `Asia/Ho_Chi_Minh` khi xem ở `Asia/Saigon` sẽ bị
+  coi là "khác vùng". Đã xử lý bằng `canonicalTimezone()` / `sameZone()` (dùng
+  chính `Intl` để chuẩn hóa) cho mọi phép so sánh, đồng thời vẫn **giữ nguyên
+  chuỗi người dùng đã chọn** khi lưu, và thêm `UTC` vào đầu danh sách chọn.
+- **Pydantic in UTC thành `Z`.** Làm `Europe/London` mùa đông (offset 0) trả về
+  `...Z` trong khi các lịch khác trả về `+07:00`. Đã ép offset dạng số cho nhất
+  quán.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **54 passed** (35 cũ + 19 test timezone mới) |
+| Frontend test | `npm test` | **49 passed** (33 cũ + 16 mới) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| Migration | chạy `migrate.py` trên bản sao database kiểu cũ | 09:00 giờ Sài Gòn → `02:00` UTC, thêm cột `timezone`, chạy lần hai là no-op |
+| **End-to-end thật** | UI thật trong jsdom → backend `:8001` → SQLite | **1 passed** (xem chi tiết bên dưới) |
+| Kiểm chứng bằng curl | tạo lịch Tokyo 18:00 và Saigon 16:30 | Tokyo lưu `2026-12-15 09:00:00` UTC; Saigon 16:30 (=09:30Z) bị **409**; Saigon 17:00 (=10:00Z, liền kề) được **201** |
+
+Nội dung bài E2E: tạo lịch 11:00–12:00 giờ Tokyo → API trả
+`2026-12-10T11:00:00+09:00` → xem ở Sài Gòn thành 09:00–10:00 kèm dòng "Giờ gốc"
+11:00–12:00, xem ở New York thành 21:00–22:00 và rơi sang **ngày hôm trước**
+trong danh sách, thời lượng vẫn 1 giờ → tạo lịch Sài Gòn 09:30–10:30 (trùng thời
+điểm thực) bị **409** và thông báo hiển thị lịch trùng theo múi giờ đang xem →
+cùng wall-clock đó nhưng ở London là thời điểm khác nên được **201** → Sài Gòn
+10:00 (đúng lúc lịch Tokyo kết thúc) được **201** → mở form sửa lịch Tokyo trong
+lúc đang xem theo giờ Sài Gòn thì form vẫn hiện 11:00 và vùng `Asia/Tokyo`.
+
+Các trường hợp timezone phủ trong pytest: naive input hiểu theo `timezone`,
+input có offset, offset thắng `timezone` khi xác định thời điểm, lưu đúng UTC,
+render lại đúng wall-clock, sắp xếp theo thời điểm thực (không theo giờ hiển
+thị), timezone lạ trả 422, cùng wall-clock ở hai vùng khác nhau **không** xung
+đột, xung đột chéo múi giờ, liền kề chéo múi giờ, xung đột vắt qua ranh giới
+ngày, đổi mỗi `timezone` cũng làm lịch dịch thời điểm và có thể sinh xung đột,
+offset khác nhau giữa mùa đông/mùa hè, khoảng thời gian vắt qua mốc DST
+(spring-forward giữ đúng 1 giờ thực, fall-back thành 2 giờ thực), và xung đột
+quanh mốc DST.
+
+### Vấn đề còn tồn tại / lưu ý
+
+1. **Giờ địa phương không tồn tại hoặc lặp lại quanh DST** được Python `zoneinfo`
+   xử lý theo mặc định (`fold=0`) chứ ứng dụng không hỏi lại người dùng. Ví dụ
+   02:30 ngày spring-forward ở New York là giờ không tồn tại nhưng vẫn được nhận.
+   Ứng dụng đặt lịch nghiêm túc nên cảnh báo ở những mốc này.
+2. **Ô chọn múi giờ liệt kê toàn bộ ~420 vùng**, chưa có tìm kiếm hay nhóm theo
+   khu vực. Dùng được nhưng chưa tiện.
+3. **Múi giờ hiển thị không được lưu lại** giữa các lần mở trang — luôn quay về
+   múi giờ của trình duyệt.
+4. **`migrate.py` là script một lần**, không có bảng version. Lần đổi schema tiếp
+   theo nên chuyển hẳn sang Alembic.
+5. Các mục tồn đọng từ Round 1–2 vẫn giữ nguyên (chưa có E2E test cố định trong
+   repo, chưa phân trang/tìm kiếm, chưa xác thực người dùng, race condition lý
+   thuyết khi kiểm tra xung đột, port mặc định 8001).

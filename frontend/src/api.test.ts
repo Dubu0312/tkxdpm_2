@@ -8,6 +8,7 @@ const INPUT = {
   location: null,
   start_time: "2026-09-01T09:00:00",
   end_time: "2026-09-01T10:00:00",
+  timezone: "Asia/Tokyo",
 };
 
 function mockFetch(response: Response | Error) {
@@ -34,7 +35,11 @@ describe("api client", () => {
     const init = fetchMock.mock.calls[0]![1]!;
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
-    expect(JSON.parse(init.body as string).title).toBe("Họp");
+    const sent = JSON.parse(init.body as string);
+    expect(sent.title).toBe("Họp");
+    // Wall clock and zone travel together; the browser does no offset maths.
+    expect(sent.start_time).toBe("2026-09-01T09:00:00");
+    expect(sent.timezone).toBe("Asia/Tokyo");
   });
 
   it("treats 204 as an empty result", async () => {
@@ -61,10 +66,11 @@ describe("api client", () => {
       title: "Họp nhóm",
       description: null,
       location: null,
-      start_time: "2026-09-01T09:00:00",
-      end_time: "2026-09-01T10:00:00",
-      created_at: "2026-08-25T08:00:00",
-      updated_at: "2026-08-25T08:00:00",
+      start_time: "2026-09-01T09:00:00+07:00",
+      end_time: "2026-09-01T10:00:00+07:00",
+      timezone: "Asia/Ho_Chi_Minh",
+      created_at: "2026-08-25T08:00:00+00:00",
+      updated_at: "2026-08-25T08:00:00+00:00",
     };
     const body = {
       detail: {

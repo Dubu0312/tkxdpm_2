@@ -1,10 +1,113 @@
 /**
- * Datetime helpers. The backend speaks naive local wall-clock ISO strings
- * ("2026-09-01T09:00:00"), which is exactly what <input type="datetime-local">
- * produces — so conversion is string slicing, never a timezone shift.
+ * Timezone-aware datetime helpers.
+ *
+ * The API returns instants with an explicit offset, in each schedule's own
+ * timezone (`2026-09-01T09:00:00+09:00`). Two directions matter here:
+ *
+ * - **Display**: an instant is formatted in whatever timezone the user is
+ *   looking at, via `Intl.DateTimeFormat` — the browser owns the offset rules.
+ * - **Input**: `<input type="datetime-local">` yields a naive wall-clock value,
+ *   which is sent unchanged together with the chosen `timezone`; the backend
+ *   resolves it to an instant. No offset arithmetic happens in the browser.
  */
 
-/** "2026-09-01T09:00:00" -> "2026-09-01T09:00" (value for datetime-local). */
+const FALLBACK_ZONES = [
+  "UTC",
+  "Asia/Ho_Chi_Minh",
+  "Asia/Bangkok",
+  "Asia/Tokyo",
+  "Asia/Singapore",
+  "Europe/London",
+  "Europe/Paris",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Australia/Sydney",
+];
+
+/** The viewer's own timezone, e.g. "Asia/Ho_Chi_Minh". */
+export function browserTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+/**
+ * Every IANA zone the runtime knows about, with a small fallback list.
+ *
+ * `supportedValuesOf` reports canonical ids only, so aliases (`Asia/Ho_Chi_Minh`
+ * for `Asia/Saigon`) and plain `UTC` are missing from it even though both are
+ * accepted everywhere — `UTC` is added back here, aliases are handled by
+ * `sameZone` / `timezoneSelect`.
+ */
+export function listTimezones(): string[] {
+  const supported = (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
+  const zones = supported ? supported.call(Intl, "timeZone") : FALLBACK_ZONES;
+  if (zones.length === 0) return FALLBACK_ZONES;
+  return zones.includes("UTC") ? zones : ["UTC", ...zones];
+}
+
+/**
+ * The runtime's canonical id for a zone, or the input if it is not a valid zone.
+ * Used for comparison only — what the user picked is what gets stored.
+ */
+export function canonicalTimezone(name: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeZone: name }).resolvedOptions().timeZone;
+  } catch {
+    return name;
+  }
+}
+
+/** True when two identifiers name the same zone, aliases included. */
+export function sameZone(a: string, b: string): boolean {
+  return a === b || canonicalTimezone(a) === canonicalTimezone(b);
+}
+
+export function parseInstant(iso: string): Date {
+  return new Date(iso);
+}
+
+interface ZonedParts {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+}
+
+function partsInZone(instant: Date, timeZone: string): ZonedParts {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const parts: Record<string, string> = {};
+  for (const part of formatter.formatToParts(instant)) {
+    if (part.type !== "literal") parts[part.type] = part.value;
+  }
+  return parts as unknown as ZonedParts;
+}
+
+/** "2026-09-01" — the calendar day the instant falls on in `timeZone`. */
+export function dayKeyInZone(iso: string, timeZone: string): string {
+  const { year, month, day } = partsInZone(parseInstant(iso), timeZone);
+  return `${year}-${month}-${day}`;
+}
+
+/** "2026-09-01T09:00" — wall-clock value for a datetime-local input. */
+export function wallClockInZone(instant: Date, timeZone: string): string {
+  const { year, month, day, hour, minute } = partsInZone(instant, timeZone);
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+/**
+ * Wall-clock value of an API datetime in its own timezone.
+ *
+ * The API already renders it there, so this is a slice, not a conversion — the
+ * edit form shows exactly the time that was typed.
+ */
 export function toInputValue(iso: string): string {
   return iso.slice(0, 16);
 }
@@ -14,56 +117,59 @@ export function toApiValue(inputValue: string): string {
   return inputValue.length === 16 ? `${inputValue}:00` : inputValue;
 }
 
-const dateFormatter = new Intl.DateTimeFormat("vi-VN", {
-  weekday: "short",
-  day: "2-digit",
-  month: "2-digit",
-  year: "numeric",
-});
-
-function parseLocal(iso: string): Date {
-  const [datePart, timePart = "00:00:00"] = iso.split("T");
-  const [year, month, day] = datePart.split("-").map(Number);
-  const [hour, minute] = timePart.split(":").map(Number);
-  return new Date(year, month - 1, day, hour, minute);
+/** Local "now" in `timeZone` as a datetime-local value, used to prefill the form. */
+export function nowInputValue(offsetMinutes: number, timeZone: string): string {
+  return wallClockInZone(new Date(Date.now() + offsetMinutes * 60000), timeZone);
 }
 
-export function formatDate(iso: string): string {
-  return dateFormatter.format(parseLocal(iso));
+export function formatDate(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone,
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(parseInstant(iso));
 }
 
-export function formatTime(iso: string): string {
-  return iso.slice(11, 16);
+export function formatTime(iso: string, timeZone: string): string {
+  const { hour, minute } = partsInZone(parseInstant(iso), timeZone);
+  return `${hour}:${minute}`;
 }
 
-/** "Thứ Ba, 01/09/2026 · 09:00 – 10:30" (or with both dates when they differ). */
-export function formatRange(startIso: string, endIso: string): string {
-  const sameDay = startIso.slice(0, 10) === endIso.slice(0, 10);
+/** "UTC+07:00" for the given instant — offsets move with DST, hence the instant. */
+export function offsetLabel(iso: string, timeZone: string): string {
+  const formatted = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "longOffset",
+  }).format(parseInstant(iso));
+  const offset = formatted.split(", ").pop() ?? "GMT";
+  return offset.replace("GMT", "UTC") === "UTC" ? "UTC+00:00" : offset.replace("GMT", "UTC");
+}
+
+/** "Thứ Ba, 01/09/2026 · 09:00 – 10:30" as seen from `timeZone`. */
+export function formatRange(startIso: string, endIso: string, timeZone: string): string {
+  const sameDay = dayKeyInZone(startIso, timeZone) === dayKeyInZone(endIso, timeZone);
   if (sameDay) {
-    return `${formatDate(startIso)} · ${formatTime(startIso)} – ${formatTime(endIso)}`;
+    return (
+      `${formatDate(startIso, timeZone)} · ` +
+      `${formatTime(startIso, timeZone)} – ${formatTime(endIso, timeZone)}`
+    );
   }
-  return `${formatDate(startIso)} ${formatTime(startIso)} – ${formatDate(endIso)} ${formatTime(endIso)}`;
+  return (
+    `${formatDate(startIso, timeZone)} ${formatTime(startIso, timeZone)} – ` +
+    `${formatDate(endIso, timeZone)} ${formatTime(endIso, timeZone)}`
+  );
 }
 
-/** Rounded duration such as "1 giờ 30 phút". */
+/** Rounded real duration such as "1 giờ 30 phút" — independent of any timezone. */
 export function formatDuration(startIso: string, endIso: string): string {
   const minutes = Math.round(
-    (parseLocal(endIso).getTime() - parseLocal(startIso).getTime()) / 60000,
+    (parseInstant(endIso).getTime() - parseInstant(startIso).getTime()) / 60000,
   );
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   if (hours === 0) return `${rest} phút`;
   if (rest === 0) return `${hours} giờ`;
   return `${hours} giờ ${rest} phút`;
-}
-
-/** Local "now" as a datetime-local input value, used to prefill the form. */
-export function nowInputValue(offsetMinutes = 0): string {
-  const now = new Date(Date.now() + offsetMinutes * 60000);
-  now.setSeconds(0, 0);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return (
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}`
-  );
 }

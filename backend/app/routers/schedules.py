@@ -1,4 +1,9 @@
-"""CRUD endpoints for schedules."""
+"""CRUD endpoints for schedules.
+
+Every datetime crossing this module is UTC: payload values are normalised to UTC
+during validation (``app.schemas``), rows store UTC, and responses are rendered
+back into each schedule's own timezone by ``ScheduleRead.from_model``.
+"""
 
 from datetime import datetime
 from typing import Annotated
@@ -37,11 +42,14 @@ def find_conflicts(
     end_time: datetime,
     exclude_id: int | None = None,
 ) -> list[Schedule]:
-    """Schedules whose time range overlaps [start_time, end_time).
+    """Schedules whose time range overlaps [start_time, end_time), all in UTC.
 
     Two ranges overlap when each one starts before the other ends. Touching
     ranges (one ends exactly when the next begins) are therefore not conflicts.
     ``exclude_id`` keeps a schedule from conflicting with itself while editing.
+
+    Comparing in UTC is what makes this correct across timezones: two schedules
+    entered in different zones conflict exactly when their real instants overlap.
     """
     stmt = select(Schedule).where(
         Schedule.start_time < end_time,
@@ -67,7 +75,7 @@ def _reject_conflicts(
             f"Time range overlaps {len(conflicts)} existing "
             f"schedule{'s' if len(conflicts) > 1 else ''}"
         ),
-        conflicts=[ScheduleRead.model_validate(item) for item in conflicts],
+        conflicts=[ScheduleRead.from_model(item) for item in conflicts],
     )
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -76,10 +84,10 @@ def _reject_conflicts(
 
 
 @router.get("", response_model=list[ScheduleRead])
-def list_schedules(session: SessionDep) -> list[Schedule]:
-    """Return every schedule, earliest start first."""
+def list_schedules(session: SessionDep) -> list[ScheduleRead]:
+    """Return every schedule, earliest start first (ordered by real instant)."""
     stmt = select(Schedule).order_by(Schedule.start_time, Schedule.id)
-    return list(session.scalars(stmt))
+    return [ScheduleRead.from_model(item) for item in session.scalars(stmt)]
 
 
 @router.post(
@@ -88,18 +96,18 @@ def list_schedules(session: SessionDep) -> list[Schedule]:
     status_code=status.HTTP_201_CREATED,
     responses=CONFLICT_RESPONSE,
 )
-def create_schedule(payload: ScheduleCreate, session: SessionDep) -> Schedule:
+def create_schedule(payload: ScheduleCreate, session: SessionDep) -> ScheduleRead:
     _reject_conflicts(session, payload.start_time, payload.end_time)
-    schedule = Schedule(**payload.model_dump())
+    schedule = Schedule(**payload.to_columns())
     session.add(schedule)
     session.commit()
     session.refresh(schedule)
-    return schedule
+    return ScheduleRead.from_model(schedule)
 
 
 @router.get("/{schedule_id}", response_model=ScheduleRead)
-def get_schedule(schedule_id: int, session: SessionDep) -> Schedule:
-    return _get_or_404(session, schedule_id)
+def get_schedule(schedule_id: int, session: SessionDep) -> ScheduleRead:
+    return ScheduleRead.from_model(_get_or_404(session, schedule_id))
 
 
 @router.put("/{schedule_id}", response_model=ScheduleRead, responses=CONFLICT_RESPONSE)
@@ -107,14 +115,14 @@ def update_schedule(
     schedule_id: int,
     payload: ScheduleUpdate,
     session: SessionDep,
-) -> Schedule:
+) -> ScheduleRead:
     schedule = _get_or_404(session, schedule_id)
     _reject_conflicts(session, payload.start_time, payload.end_time, exclude_id=schedule_id)
-    for field, value in payload.model_dump().items():
+    for field, value in payload.to_columns().items():
         setattr(schedule, field, value)
     session.commit()
     session.refresh(schedule)
-    return schedule
+    return ScheduleRead.from_model(schedule)
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)

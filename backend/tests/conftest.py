@@ -1,25 +1,42 @@
-"""Test fixtures: each test gets a fresh SQLite database in a temp directory."""
+"""Test fixtures.
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+The whole suite runs against throwaway SQLite files: ``DATABASE_URL`` is pointed
+at a temp directory *before* the app is imported, so nothing here ever touches
+the developer's ``data/app.db``. On top of that each test gets its own database.
+"""
 
-from app.db import Base, get_session
-from app.main import app
+import os
+import tempfile
+from pathlib import Path
+
+_TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="tkxdpm2-tests-"))
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_DIR / 'app.db'}"
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+from app.db import Base, get_session  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 @pytest.fixture()
-def client(tmp_path):
+def db(tmp_path):
+    """A fresh database per test; yields its session factory."""
     engine = create_engine(
         f"sqlite:///{tmp_path / 'test.db'}",
         connect_args={"check_same_thread": False},
     )
-    TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     Base.metadata.create_all(bind=engine)
+    yield sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    engine.dispose()
 
+
+@pytest.fixture()
+def client(db):
     def override_get_session():
-        session = TestingSession()
+        session = db()
         try:
             yield session
         finally:
@@ -29,4 +46,3 @@ def client(tmp_path):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-    engine.dispose()

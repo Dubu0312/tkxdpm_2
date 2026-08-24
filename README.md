@@ -3,9 +3,10 @@
 Ứng dụng đặt lịch (scheduling) chạy local: backend Python + SQLite, frontend TypeScript.
 
 Chức năng hiện có: tạo lịch, xem danh sách, xem chi tiết, chỉnh sửa và xóa lịch.
-Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, địa điểm và mô tả (hai trường
-sau không bắt buộc), kèm mốc `created_at` / `updated_at`. Backend từ chối các lịch
-bị trùng khung giờ với lịch đã có.
+Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, múi giờ, địa điểm và mô tả
+(hai trường sau không bắt buộc), kèm mốc `created_at` / `updated_at`. Lịch có thể
+được tạo ở bất kỳ múi giờ nào và xem lại ở múi giờ khác mà không đổi thời điểm
+thực. Backend từ chối các lịch bị trùng khung giờ với lịch đã có.
 
 ## Tech stack
 
@@ -25,11 +26,12 @@ bị trùng khung giờ với lịch đã có.
 │   ├── app/
 │   │   ├── config.py       # settings from environment / .env
 │   │   ├── db.py           # SQLAlchemy engine + session (SQLite)
-│   │   ├── models.py       # Schedule ORM model
-│   │   ├── schemas.py      # Pydantic request/response schemas
+│   │   ├── models.py       # Schedule ORM model (instants stored in UTC)
+│   │   ├── schemas.py      # Pydantic schemas + timezone conversion
 │   │   ├── routers/
 │   │   │   └── schedules.py# CRUD endpoints under /api/schedules
 │   │   └── main.py         # FastAPI app: GET /, GET /health, router
+│   ├── migrate.py          # one-off upgrade of pre-timezone databases
 │   ├── tests/              # pytest
 │   ├── run.py              # dev entry point (reads host/port from .env)
 │   ├── requirements.in     # direct runtime deps
@@ -40,7 +42,7 @@ bị trùng khung giờ với lịch đã có.
 │   └── src/
 │       ├── api.ts          # typed fetch client
 │       ├── types.ts        # Schedule types
-│       ├── format.ts       # datetime helpers
+│       ├── format.ts       # timezone-aware datetime helpers
 │       ├── views.ts        # list / detail / form rendering
 │       └── main.ts         # app state + wiring
 ├── data/                   # local SQLite files (contents not committed)
@@ -132,9 +134,7 @@ npm run preview              # serve the production build
 
 ## API
 
-Base URL: `http://127.0.0.1:8001`. Datetimes are naive local wall-clock ISO
-strings (`2026-09-01T09:00:00`) — exactly what `<input type="datetime-local">`
-produces, so no timezone conversion happens anywhere.
+Base URL: `http://127.0.0.1:8001`.
 
 | Method | Path                   | Mô tả                                       |
 | ------ | ---------------------- | ------------------------------------------- |
@@ -145,9 +145,42 @@ produces, so no timezone conversion happens anywhere.
 | DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
 
 Schedule fields: `title` (bắt buộc, ≤200 ký tự), `start_time`, `end_time` (bắt
-buộc, `end_time` phải sau `start_time`), `location` và `description` (tùy chọn),
-cùng `id`, `created_at`, `updated_at` do server sinh ra. Dữ liệu không hợp lệ trả
-về `422` kèm thông báo, id không tồn tại trả về `404`.
+buộc, `end_time` phải sau `start_time`), `timezone` (tên IANA, mặc định
+`DEFAULT_TIMEZONE`), `location` và `description` (tùy chọn), cùng `id`,
+`created_at`, `updated_at` do server sinh ra. Dữ liệu không hợp lệ trả về `422`
+kèm thông báo, id không tồn tại trả về `404`.
+
+### Múi giờ
+
+Quy ước xử lý thời gian:
+
+| Tầng | Cách xử lý |
+| --- | --- |
+| SQLite | `start_time` / `end_time` / `created_at` / `updated_at` lưu **UTC** (naive, vì SQLite không có kiểu aware); `timezone` lưu tên IANA riêng |
+| Backend | Chuyển input về UTC lúc validate, so sánh và sắp xếp bằng UTC, dựng response về múi giờ của từng lịch |
+| API | ISO-8601 kèm offset tường minh, ví dụ `2026-09-01T09:00:00+09:00`; `created_at`/`updated_at` là `+00:00` |
+| Frontend | Hiển thị mọi thời điểm theo *múi giờ đang xem* bằng `Intl.DateTimeFormat`; ô nhập gửi giờ wall-clock kèm `timezone`, không tự tính offset |
+
+Input `start_time` / `end_time` chấp nhận hai dạng:
+
+* **kèm offset** (`2026-09-01T09:00:00+09:00`) — offset quyết định thời điểm,
+  trường `timezone` chỉ dùng để hiển thị lại;
+* **không offset** (`2026-09-01T09:00:00`) — được hiểu là giờ địa phương của
+  `timezone` trong cùng request. Đây là dạng frontend gửi.
+
+Vì mọi so sánh diễn ra trên UTC, phát hiện xung đột hoạt động đúng giữa các múi
+giờ khác nhau và qua các mốc đổi giờ DST. Một `timezone` không hợp lệ trả về `422`.
+
+Ví dụ — hai lịch dưới đây xung đột dù giờ hiển thị khác nhau (cùng là 09:00 UTC):
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/json' \
+  -d '{"title":"Tokyo","start_time":"2026-12-15T18:00:00","end_time":"2026-12-15T19:00:00","timezone":"Asia/Tokyo"}'
+
+curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/json' \
+  -d '{"title":"Saigon","start_time":"2026-12-15T16:30:00","end_time":"2026-12-15T17:30:00","timezone":"Asia/Saigon"}'
+# -> 409 Conflict
+```
 
 ### Xung đột thời gian
 
@@ -180,7 +213,7 @@ Ví dụ:
 ```bash
 curl -X POST http://127.0.0.1:8001/api/schedules \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Họp nhóm","start_time":"2026-09-01T09:00:00","end_time":"2026-09-01T10:30:00"}'
+  -d '{"title":"Họp nhóm","start_time":"2026-09-01T09:00:00","end_time":"2026-09-01T10:30:00","timezone":"Asia/Ho_Chi_Minh"}'
 ```
 
 ## Tests and linting
@@ -197,7 +230,18 @@ cd frontend && npm run typecheck && npm test
 ## Database
 
 SQLite is used by default; the database file and the `schedules` table are
-created automatically at `data/app.db` when the app starts. The `data/` directory is tracked but its
+created automatically at `data/app.db` when the app starts.
+
+Nếu database được tạo **trước** khi có hỗ trợ múi giờ (trước Round 3), app sẽ báo
+lỗi khi khởi động vì bảng `schedules` còn thiếu cột `timezone`. Nâng cấp bằng:
+
+```bash
+cd backend
+python migrate.py --timezone Asia/Ho_Chi_Minh   # múi giờ các bản ghi cũ đã nhập
+```
+
+Script này thêm cột `timezone` và đổi các mốc thời gian cũ (giờ địa phương) sang
+UTC. Chạy lại lần nữa là no-op. The `data/` directory is tracked but its
 `*.db` contents are ignored by Git. Point `DATABASE_URL` elsewhere in `.env` to
 use a different location or engine.
 

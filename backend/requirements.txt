@@ -10,8 +10,8 @@ greenlet==3.5.5
 h11==0.16.0
 httptools==0.8.0
 idna==3.19
-pydantic==2.13.4
 pydantic-settings==2.15.0
+pydantic==2.13.4
 pydantic_core==2.46.4
 python-dotenv==1.2.3
 PyYAML==6.0.3
@@ -19,6 +19,7 @@ SQLAlchemy==2.0.52
 starlette==1.6.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+tzdata==2026.3
 uvicorn==0.52.4
 uvloop==0.22.1
 watchfiles==1.2.0

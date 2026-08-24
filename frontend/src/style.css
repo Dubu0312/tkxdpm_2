@@ -173,6 +173,12 @@ body {
   font-weight: 500;
 }
 
+.panel__origin {
+  margin: 0.3rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
 .panel__duration {
   margin: 0.1rem 0 1rem;
   color: var(--muted);
@@ -216,7 +222,23 @@ body {
   color: var(--muted);
 }
 
+.tzpicker {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.tzpicker select {
+  width: auto;
+  max-width: 14rem;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.85rem;
+}
+
 input,
+select,
 textarea {
   font: inherit;
   color: inherit;
@@ -229,6 +251,7 @@ textarea {
 }
 
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible,
 .card:focus-visible,
 .btn:focus-visible {

@@ -96,7 +96,8 @@ def test_update_onto_another_schedule_is_rejected(client, existing):
     assert response.status_code == 409
     assert [item["id"] for item in response.json()["detail"]["conflicts"]] == [existing["id"]]
     # The rejected edit left the record untouched.
-    assert client.get(f"/api/schedules/{other['id']}").json()["start_time"] == f"{DAY}T14:00:00"
+    unchanged = client.get(f"/api/schedules/{other['id']}").json()
+    assert unchanged["start_time"] == f"{DAY}T14:00:00+07:00"
 
 
 def test_update_does_not_conflict_with_itself(client, existing):
@@ -123,7 +124,7 @@ def test_update_can_move_a_schedule_into_a_free_slot(client, existing):
         },
     )
     assert response.status_code == 200, response.text
-    assert response.json()["start_time"] == f"{DAY}T10:00:00"
+    assert response.json()["start_time"] == f"{DAY}T10:00:00+07:00"
 
 
 def test_update_may_shrink_a_schedule_onto_its_own_range(client, existing):

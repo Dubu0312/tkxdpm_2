@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
@@ -31,6 +31,21 @@ def init_db() -> None:
     from app import models  # noqa: F401  (import registers the models)
 
     Base.metadata.create_all(bind=engine)
+    _assert_schema_current()
+
+
+def _assert_schema_current() -> None:
+    """Fail loudly on a database created before timezone support was added.
+
+    ``create_all`` only creates missing tables, so an existing ``schedules``
+    table keeps its old columns. Better a clear error than silent misreads.
+    """
+    columns = {column["name"] for column in inspect(engine).get_columns("schedules")}
+    if "timezone" not in columns:
+        raise RuntimeError(
+            "The 'schedules' table predates timezone support. "
+            "Run 'python migrate.py' from the backend directory to upgrade it."
+        )
 
 
 def get_session():

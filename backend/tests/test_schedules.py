@@ -1,9 +1,15 @@
+# Times are sent as naive wall-clock values plus an explicit timezone; responses
+# come back in that same timezone, offset included.
+TZ = "Asia/Ho_Chi_Minh"
+OFFSET = "+07:00"
+
 PAYLOAD = {
     "title": "Họp nhóm",
     "description": "Review sprint",
     "location": "Phòng A1",
     "start_time": "2026-09-01T09:00:00",
     "end_time": "2026-09-01T10:30:00",
+    "timezone": TZ,
 }
 
 
@@ -25,9 +31,12 @@ def test_create_returns_full_record(client):
     assert body["title"] == PAYLOAD["title"]
     assert body["description"] == PAYLOAD["description"]
     assert body["location"] == PAYLOAD["location"]
-    assert body["start_time"] == PAYLOAD["start_time"]
-    assert body["end_time"] == PAYLOAD["end_time"]
-    assert body["created_at"] and body["updated_at"]
+    assert body["start_time"] == f"{PAYLOAD['start_time']}{OFFSET}"
+    assert body["end_time"] == f"{PAYLOAD['end_time']}{OFFSET}"
+    assert body["timezone"] == TZ
+    # Timestamps are server-side UTC, rendered with an explicit offset.
+    assert body["created_at"].endswith("+00:00")
+    assert body["updated_at"].endswith("+00:00")
 
 
 def test_optional_fields_may_be_omitted(client):
@@ -76,7 +85,7 @@ def test_update(client):
     body = response.json()
     assert body["id"] == created["id"]
     assert body["title"] == "Họp nhóm (dời giờ)"
-    assert body["end_time"] == "2026-09-01T11:00:00"
+    assert body["end_time"] == f"2026-09-01T11:00:00{OFFSET}"
     assert client.get(f"/api/schedules/{created['id']}").json()["title"] == "Họp nhóm (dời giờ)"
 
 
@@ -118,7 +127,7 @@ def test_empty_title_is_rejected(client):
     assert response.status_code == 422
 
 
-def test_timezone_aware_input_is_stored_as_local_naive(client):
-    body = create(client, start_time="2026-09-01T09:00:00+07:00")
-    assert "+" not in body["start_time"]
-    assert body["start_time"].endswith(":00")
+def test_response_uses_the_schedule_timezone(client):
+    body = create(client)
+    assert body["start_time"].endswith(OFFSET)
+    assert body["timezone"] == TZ
