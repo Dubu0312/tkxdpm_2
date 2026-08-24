@@ -1,13 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>tkxdpm_2</title>
+    <title>Lịch hẹn — tkxdpm_2</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <header class="topbar">
+        <h1>Lịch hẹn</h1>
+        <span id="count" class="count"></span>
+        <button id="create" class="btn btn--primary" type="button">Tạo lịch</button>
+      </header>
+      <p id="error" class="error" role="alert" hidden></p>
+      <main class="layout">
+        <section id="list" class="column column--list" aria-label="Danh sách lịch"></section>
+        <section id="panel" class="column column--panel" aria-label="Chi tiết lịch"></section>
+      </main>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

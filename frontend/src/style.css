@@ -1,21 +1,256 @@
 :root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e2e5ea;
+  --text: #1c2024;
+  --muted: #676f7a;
+  --accent: #2f6feb;
+  --danger: #c62f43;
+
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  line-height: 1.6;
-  color-scheme: light dark;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --surface: #1f2227;
+    --border: #33383f;
+    --text: #e8eaed;
+    --muted: #a1a8b3;
+    --accent: #6ea0ff;
+    --danger: #ff7b8c;
+  }
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  background: var(--bg);
+}
+
+#app {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.topbar h1 {
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+.count {
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin-right: auto;
+}
+
+.error {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  font-size: 0.9rem;
+}
+
+.layout {
   display: grid;
-  place-items: center;
-  min-height: 100vh;
+  grid-template-columns: minmax(16rem, 22rem) 1fr;
+  gap: 1rem;
+  align-items: start;
 }
 
-main {
-  padding: 2rem;
-  max-width: 40rem;
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
 }
 
-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.day {
+  margin: 0.8rem 0 0.2rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.day:first-child {
+  margin-top: 0;
+}
+
+.card {
+  display: grid;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.card:hover {
+  border-color: var(--accent);
+}
+
+.card--active {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.card__time {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.card__title {
+  font-weight: 600;
+}
+
+.card__meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.panel {
+  padding: 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.panel h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1.15rem;
+}
+
+.panel__when {
+  margin: 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.panel__duration {
+  margin: 0.1rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.4rem 1rem;
+  margin: 0 0 1.2rem;
+  font-size: 0.925rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.field__label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.field__hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  width: 100%;
+  resize: vertical;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+.card:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn {
+  font: inherit;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.empty {
+  color: var(--muted);
+  margin: 0;
+}
+
+.panel--placeholder {
+  border-style: dashed;
 }

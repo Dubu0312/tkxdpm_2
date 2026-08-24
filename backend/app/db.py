@@ -19,7 +19,18 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 class Base(DeclarativeBase):
-    """Base class for future ORM models."""
+    """Base class for ORM models."""
+
+
+def init_db() -> None:
+    """Create tables for any model registered on Base.
+
+    The schema is small and there is no migration tool yet, so create_all is
+    enough; swap in Alembic once schema changes need to be versioned.
+    """
+    from app import models  # noqa: F401  (import registers the models)
+
+    Base.metadata.create_all(bind=engine)
 
 
 def get_session():

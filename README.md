@@ -1,8 +1,10 @@
 # tkxdpm_2
 
-Project skeleton with a Python backend, SQLite database, and a TypeScript frontend.
+Ứng dụng đặt lịch (scheduling) chạy local: backend Python + SQLite, frontend TypeScript.
 
-> Round 0 status: development environment only. No business features implemented yet.
+Chức năng hiện có: tạo lịch, xem danh sách, xem chi tiết, chỉnh sửa và xóa lịch.
+Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, địa điểm và mô tả (hai trường
+sau không bắt buộc), kèm mốc `created_at` / `updated_at`.
 
 ## Tech stack
 
@@ -10,8 +12,8 @@ Project skeleton with a Python backend, SQLite database, and a TypeScript fronte
 | ---------- | --------------------------------------------------- |
 | Backend    | Python 3.11 · FastAPI · Uvicorn                     |
 | Database   | SQLite (via SQLAlchemy)                             |
-| Frontend   | TypeScript · Vite                                   |
-| Tooling    | pip + pinned requirements · pytest · ruff · npm     |
+| Frontend   | TypeScript · Vite (vanilla, không framework UI)     |
+| Tooling    | pip + pinned requirements · pytest · ruff · vitest  |
 
 ## Layout
 
@@ -22,7 +24,11 @@ Project skeleton with a Python backend, SQLite database, and a TypeScript fronte
 │   ├── app/
 │   │   ├── config.py       # settings from environment / .env
 │   │   ├── db.py           # SQLAlchemy engine + session (SQLite)
-│   │   └── main.py         # FastAPI app: GET / and GET /health
+│   │   ├── models.py       # Schedule ORM model
+│   │   ├── schemas.py      # Pydantic request/response schemas
+│   │   ├── routers/
+│   │   │   └── schedules.py# CRUD endpoints under /api/schedules
+│   │   └── main.py         # FastAPI app: GET /, GET /health, router
 │   ├── tests/              # pytest
 │   ├── run.py              # dev entry point (reads host/port from .env)
 │   ├── requirements.in     # direct runtime deps
@@ -30,6 +36,12 @@ Project skeleton with a Python backend, SQLite database, and a TypeScript fronte
 │   ├── requirements-dev.in # direct dev deps
 │   └── requirements-dev.txt# pinned dev lock file
 ├── frontend/               # Vite + TypeScript app
+│   └── src/
+│       ├── api.ts          # typed fetch client
+│       ├── types.ts        # Schedule types
+│       ├── format.ts       # datetime helpers
+│       ├── views.ts        # list / detail / form rendering
+│       └── main.ts         # app state + wiring
 ├── data/                   # local SQLite files (contents not committed)
 ├── docs/prompt-driven-log.md
 └── .env.example            # template; copy to .env (never commit .env)
@@ -92,6 +104,8 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 - Health check: <http://127.0.0.1:8001/health>
 - OpenAPI docs: <http://127.0.0.1:8001/docs>
 
+The `schedules` table is created automatically on startup.
+
 > The default port is **8001**, not 8000, because port 8000 is already in use on
 > the current development machine. Change `BACKEND_PORT` in `.env` if needed
 > (and keep `VITE_API_BASE_URL` in sync).
@@ -103,30 +117,60 @@ cd frontend
 npm run dev                  # http://localhost:5173
 ```
 
-The dev page calls the backend `/health` endpoint, so start the backend first to
-see an "ok" status.
+Open <http://localhost:5173>. The page talks to the backend, so start the backend
+first — otherwise the list shows a connection error.
 
 Other frontend scripts:
 
 ```bash
 npm run typecheck            # tsc --noEmit
+npm run test                 # vitest (jsdom)
 npm run build                # type check + production build into frontend/dist
 npm run preview              # serve the production build
+```
+
+## API
+
+Base URL: `http://127.0.0.1:8001`. Datetimes are naive local wall-clock ISO
+strings (`2026-09-01T09:00:00`) — exactly what `<input type="datetime-local">`
+produces, so no timezone conversion happens anywhere.
+
+| Method | Path                   | Mô tả                                       |
+| ------ | ---------------------- | ------------------------------------------- |
+| GET    | `/api/schedules`       | Danh sách lịch, sắp xếp theo thời gian bắt đầu |
+| POST   | `/api/schedules`       | Tạo lịch (201)                              |
+| GET    | `/api/schedules/{id}`  | Chi tiết một lịch                           |
+| PUT    | `/api/schedules/{id}`  | Cập nhật toàn bộ một lịch                   |
+| DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
+
+Schedule fields: `title` (bắt buộc, ≤200 ký tự), `start_time`, `end_time` (bắt
+buộc, `end_time` phải sau `start_time`), `location` và `description` (tùy chọn),
+cùng `id`, `created_at`, `updated_at` do server sinh ra. Dữ liệu không hợp lệ trả
+về `422` kèm thông báo, id không tồn tại trả về `404`.
+
+Ví dụ:
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/schedules \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Họp nhóm","start_time":"2026-09-01T09:00:00","end_time":"2026-09-01T10:30:00"}'
 ```
 
 ## Tests and linting
 
 ```bash
+# Backend
 source .venv/bin/activate
-cd backend
-pytest                       # backend tests
-ruff check .                 # backend lint
+cd backend && pytest && ruff check .
+
+# Frontend
+cd frontend && npm run typecheck && npm test
 ```
 
 ## Database
 
-SQLite is used by default; the database file is created automatically at
-`data/app.db` on first connection. The `data/` directory is tracked but its
+SQLite is used by default; the database file and the `schedules` table are
+created automatically at `data/app.db` when the app starts. The `data/` directory is tracked but its
 `*.db` contents are ignored by Git. Point `DATABASE_URL` elsewhere in `.env` to
 use a different location or engine.
 
