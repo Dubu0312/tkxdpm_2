@@ -951,3 +951,153 @@ hiện "7 ngày" → gọi thẳng API bỏ qua UI với lịch 10 phút vẫn n
 4. **`GET /api/config` đọc lúc tải trang**; đổi cấu hình khi tab đang mở thì
    frontend chưa biết cho tới khi tải lại.
 5. Các mục tồn đọng từ Round 1–6 vẫn giữ nguyên.
+
+---
+
+## Round 8 — Integrate Google Calendar
+
+**Ngày:** 2026-08-25
+**Commit:** `round 08: integrate Google Calendar`
+
+### Yêu cầu
+
+Cho phép lịch trong ứng dụng đồng bộ với Google Calendar: authentication, tạo
+event, liên kết event với lịch trong SQLite, cập nhật khi lịch thay đổi, xử lý
+khi lịch bị xóa, và tránh tạo duplicate khi sync nhiều lần. Thời gian gửi sang
+Google phải giữ đúng timezone và thời điểm thực. Nếu chưa có credential thật thì
+project vẫn phải chạy local. Không commit secret, OAuth token hay credential.
+
+### Thiết kế
+
+**Một interface, ba chế độ** (`GOOGLE_CALENDAR_MODE`):
+
+| Chế độ | Vai trò |
+| --- | --- |
+| `disabled` (mặc định) | Không tích hợp. App chạy đầy đủ; endpoint sync trả `503` kèm đúng câu cần làm gì để bật. Đây là trạng thái của một lần clone sạch. |
+| `memory` | Bản mô phỏng trong tiến trình, **cùng luật** insert/update/delete với API thật. Nhờ nó toàn bộ luồng demo được và test được mà không cần credential. Được gọi tên trung thực trong `/api/config/google`: "không phải Google Calendar thật". |
+| `google` | Google Calendar API thật, OAuth. |
+
+**Chống trùng event — hai lớp.** Lớp một: lịch lưu `google_event_id`, sync lần
+sau là *update*. Lớp hai, quan trọng hơn: **id event được suy ra từ id lịch**
+(`tkdpm{id}`), nên ngay cả khi liên kết ở local bị mất thì lệnh insert cũng va
+chạm với event cũ và được chuyển thành update — không thể sinh ra event thứ hai.
+Chiều ngược lại cũng được xử lý: nếu event bị xóa bên Google thì update báo
+"không tìm thấy" và nó được tạo lại. Cả hai nhánh đều có test.
+
+Google chỉ chấp nhận id gồm ký tự base32hex (`0-9`, `a-v`) — nên tiền tố mặc định
+là `tkdpm` chứ không phải `tkxdpm` (`x` không hợp lệ), và có validate báo lỗi rõ
+nếu ai đó đổi tiền tố thành chuỗi không hợp lệ.
+
+**Thời gian.** Event gửi đi mang `dateTime` kèm offset **và** `timeZone` là tên
+IANA — cùng thứ mà API của app vẫn trả về. Google vì thế nhận đủ cả thời điểm
+thực lẫn múi giờ gốc. Có test cho múi giờ khác nhau, lịch qua nửa đêm, và đêm
+DST (hai đầu mang hai offset khác nhau).
+
+**Sync là opt-in theo từng lịch**, nhưng **lịch đã liên kết thì tự cập nhật** khi
+bị sửa. Sửa một lịch chưa liên kết thì không tự đẩy lên Google — người dùng chưa
+yêu cầu điều đó.
+
+**Khi đẩy thất bại**: bản sửa ở local vẫn đứng vững, chỉ có `google_out_of_date`
+bật lên (suy ra từ `updated_at > google_synced_at`) để giao diện mời đồng bộ lại.
+Lệch nhau nhưng **nhìn thấy được**, thay vì im lặng.
+
+**Khi xóa lịch**: xóa event Google trước, nhưng nếu không gọi được Google thì vẫn
+xóa ở local và ghi cảnh báo — không được để một dịch vụ ngoài chặn người dùng xóa
+lịch của chính họ. Đánh đổi: có thể còn event mồ côi bên Google.
+
+**Credential**: OAuth Desktop app. `google_auth.py` chạy consent flow một lần và
+ghi token vào `secrets/`. Cả `secrets/*` đều bị git-ignore (chỉ giữ lại
+`secrets/README.md` giải thích chỗ đó chứa gì), cộng thêm `*token*.json` và
+`client_secret*.json` ở mọi vị trí. Thư viện Google được import **lazy** để app
+vẫn khởi động khi thiếu chúng.
+
+### Một lỗi thật gặp khi làm
+
+Sau khi sync xong, lịch lập tức bị đánh dấu `google_out_of_date`. Nguyên nhân:
+chính thao tác ghi các cột liên kết cũng kích hoạt `onupdate` của `updated_at`,
+nên `updated_at` luôn mới hơn `google_synced_at` vài micro giây. Về mặt ngữ nghĩa
+thì sync **không phải** là thay đổi nội dung lịch, nên lời giải là ghi lại giá
+trị `updated_at` cũ. Nhưng gán lại **cùng một giá trị** thì SQLAlchemy coi là
+không đổi và `onupdate` vẫn chạy — phải `flag_modified()` để buộc cột đó vào câu
+UPDATE. Chi tiết nhỏ nhưng nếu không xử lý thì mọi lịch vừa sync đều hiện "cần
+đồng bộ lại".
+
+Ngoài ra một lần `str.replace` sửa `views.ts` không khớp (chuỗi neo nằm trên
+nhiều dòng) nên **im lặng không làm gì** — dòng "Google Calendar" không xuất hiện
+trong panel. Bài E2E bắt được; từ đó có kiểm tra lại kết quả replace.
+
+### Đã thay đổi
+
+**Backend**
+- `app/google_calendar.py` (mới) — protocol `CalendarClient`, ba client, ngoại lệ
+  riêng, `event_id_for()`, `event_body()`, `push()`, `remove()`.
+- `app/models.py` — `google_event_id`, `google_calendar_id`, `google_synced_at`,
+  property `google_out_of_date`.
+- `app/schemas.py` — các trường trên trong `ScheduleRead`, thêm `GoogleStatusRead`.
+- `app/routers/schedules.py` — `POST`/`DELETE /{id}/google`, tự đẩy khi sửa lịch
+  đã liên kết, xóa event khi xóa lịch, `_save_google_link()` giữ `updated_at`.
+- `app/routers/config.py` — `GET /api/config/google`.
+- `app/config.py` — 5 setting mới; `google_auth.py` — consent flow một lần.
+- `migrate.py`, `app/db.py` — bước migration thứ tư và schema guard.
+- `requirements` — `google-api-python-client`, `google-auth-oauthlib`.
+- `.gitignore` — `secrets/*`, `*token*.json`, `client_secret*.json`.
+
+**Frontend**
+- `src/types.ts`, `src/api.ts` — trường liên kết, `GoogleStatus`,
+  `fetchGoogleStatus()`, `syncToGoogle()`, `unlinkFromGoogle()`.
+- `src/views.ts` — `googleSummary()`, dòng "Google Calendar" trong panel, nút
+  "Đồng bộ Google" / "Đồng bộ lại" / "Bỏ liên kết", và ghi chú giải thích khi
+  tích hợp đang tắt (thay vì ẩn tính năng đi không nói gì).
+- `src/main.ts` — nạp trạng thái Google lúc khởi động, nối hai hành động.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **206 passed** (175 cũ + 31 test Google) |
+| Regression 6 file của các round trước | `pytest` | **159 passed**, không sửa gì |
+| Frontend test | `npm test` | **113 passed** (103 cũ + 10 mới) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| Migration | `migrate.py` trên database thật | thêm ba cột, lần hai no-op |
+| Chạy không có credential | mặc định `disabled` | app hoạt động đầy đủ; `/api/config/google` báo `enabled: false` kèm hướng dẫn; sync trả **503** |
+| `google_auth.py` khi thiếu client secret | chạy thử | báo đúng đường dẫn cần đặt file và cách tạo OAuth client, thoát mã 1 |
+| **End-to-end thật** | UI thật → backend `:8001` (mode `memory`) → SQLite | **1 passed** (chi tiết bên dưới) |
+
+31 test backend phủ: chạy được khi tắt tích hợp, `503` với thông điệp hữu ích,
+trạng thái ba chế độ, tạo event và lưu liên kết, các trường tùy chọn, không gửi
+key rỗng, offset + tên vùng, hai múi giờ khác nhau, lịch qua nửa đêm, đêm DST,
+sync hai lần / năm lần không sinh event mới, **mất liên kết vẫn không tạo trùng**,
+event bị xóa bên Google thì tạo lại, hai lịch thì hai event, id không hợp lệ báo
+lỗi, sửa lịch đã liên kết thì event đổi theo (tiêu đề, giờ, múi giờ), sửa lịch
+chưa liên kết thì không tạo gì, đẩy thất bại thì bản sửa vẫn đứng và cờ
+`google_out_of_date` bật, xóa lịch thì xóa event, xóa được cả khi Google hỏng,
+bỏ liên kết rồi sync lại dùng đúng id cũ.
+
+Nội dung bài E2E: tạo lịch giờ Tokyo qua form → panel hiện "Chưa đồng bộ" và chỉ
+có nút "Đồng bộ Google" → bấm sync, panel chuyển sang "Đã đồng bộ" và hiện thêm
+"Đồng bộ lại" + "Bỏ liên kết", `google_event_id` = `tkdpm{id}` → bấm đồng bộ lại
+thì id **không đổi** → sửa lịch qua form (đổi tiêu đề và giờ) thì cùng event được
+cập nhật, `google_out_of_date` vẫn `false`, giờ mới trả về `+09:00` đúng Tokyo →
+bấm "Bỏ liên kết" thì quay lại "Chưa đồng bộ" và `google_event_id` là `null` →
+sync lại rồi xóa lịch thì xóa được (204).
+
+### Giới hạn hiện tại
+
+1. **Nhánh `google` thật chưa được chạy tự động.** Toàn bộ test dùng bản mô
+   phỏng `memory`; code gọi API thật đã viết đủ và có hướng dẫn cấu hình, nhưng
+   chưa được chạy với credential thật trong round này. Đây là giới hạn cần nói
+   thẳng, không phải "đã kiểm chứng".
+2. **Đồng bộ một chiều** (app → Google). Sửa event bên Google không quay ngược
+   về app; muốn hai chiều cần webhook/watch channel và xử lý xung đột.
+3. **Không có hàng đợi hay retry.** Đẩy thất bại thì chỉ bật cờ `google_out_of_date`
+   và chờ người dùng bấm lại.
+4. **Xóa lịch có thể để lại event mồ côi** nếu lúc đó không gọi được Google —
+   đánh đổi có chủ ý để không chặn thao tác xóa.
+5. **Một tài khoản Google cho cả app**, chưa có khái niệm người dùng, nên chưa
+   phân biệt được ai sync sang calendar nào.
+6. **Reset database làm id lịch chạy lại từ 1**, nên id event suy ra có thể trùng
+   với event cũ trên cùng calendar và sẽ *cập nhật* event cũ thay vì tạo mới.
+   Chấp nhận được với ứng dụng local; nếu cần chắc chắn thì thêm một mã cài đặt
+   ngẫu nhiên vào tiền tố.
+7. Các mục tồn đọng từ Round 1–7 vẫn giữ nguyên.

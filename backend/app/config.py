@@ -1,6 +1,7 @@
 """Application settings, loaded from environment variables / .env."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,15 @@ class Settings(BaseSettings):
     # How long a schedule is allowed to be, in minutes. These are the single
     # source of truth for the rule: the API enforces them and serves them to the
     # frontend, so no length is written down anywhere else.
+    # Google Calendar integration. "disabled" keeps the app fully usable without
+    # credentials; "memory" is a local stand-in for demos and tests; "google" is
+    # the real API. Credential files live outside the repository.
+    google_calendar_mode: Literal["disabled", "memory", "google"] = "disabled"
+    google_calendar_id: str = "primary"
+    google_credentials_file: str = "secrets/google_client_secret.json"
+    google_token_file: str = "secrets/google_token.json"
+    google_event_id_prefix: str = "tkdpm"
+
     min_duration_minutes: int = 15
     max_duration_minutes: int = 7 * 24 * 60  # one week
 
@@ -53,6 +63,19 @@ class Settings(BaseSettings):
         if raw in ("", ":memory:") or raw.startswith("/"):
             return value
         return prefix + str((PROJECT_ROOT / raw).resolve())
+
+    @property
+    def google_credentials_path(self) -> Path:
+        return self._resolve(self.google_credentials_file)
+
+    @property
+    def google_token_path(self) -> Path:
+        return self._resolve(self.google_token_file)
+
+    @staticmethod
+    def _resolve(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else PROJECT_ROOT / path
 
     @model_validator(mode="after")
     def _sane_duration_limits(self):

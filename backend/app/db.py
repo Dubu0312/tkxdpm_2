@@ -41,7 +41,14 @@ def _assert_schema_current() -> None:
     table keeps its old columns. Better a clear error than silent misreads.
     """
     columns = {column["name"] for column in inspect(engine).get_columns("schedules")}
-    missing = {"timezone", "country", "reminder_minutes", "notified_at"} - columns
+    missing = {
+        "timezone",
+        "country",
+        "reminder_minutes",
+        "notified_at",
+        "google_event_id",
+        "google_synced_at",
+    } - columns
     if missing:
         raise RuntimeError(
             f"The 'schedules' table is missing {sorted(missing)}. "

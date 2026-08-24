@@ -5,6 +5,7 @@ import { ApiError } from "./api";
 import {
   countryLabel,
   countrySelect,
+  googleSummary,
   reminderSelect,
   reminderSummary,
   renderDetail,
@@ -30,6 +31,10 @@ function schedule(overrides: Partial<Schedule> = {}): Schedule {
     reminder_minutes: null,
     notify_at: null,
     notified_at: null,
+    google_event_id: null,
+    google_calendar_id: null,
+    google_synced_at: null,
+    google_out_of_date: false,
     created_at: "2026-08-25T08:00:00+00:00",
     updated_at: "2026-08-25T08:00:00+00:00",
     ...overrides,
@@ -684,5 +689,81 @@ describe("duration limits", () => {
     const hints = [...form.querySelectorAll(".field__hint")].map((n) => n.textContent);
     expect(hints.some((h) => h?.includes("Thời lượng từ"))).toBe(false);
     expect(hints.some((h) => h?.includes("ngày hôm sau"))).toBe(true);
+  });
+});
+
+describe("Google Calendar in the detail panel", () => {
+  const handlers = { onEdit: () => {}, onDelete: () => {} };
+  const enabled = { mode: "memory", enabled: true, calendar_id: "primary", detail: null };
+  const disabled = {
+    mode: "disabled",
+    enabled: false,
+    calendar_id: "primary",
+    detail: "Google Calendar integration is disabled. Set GOOGLE_CALENDAR_MODE…",
+  };
+  const linked = (overrides = {}) =>
+    schedule({
+      google_event_id: "tkdpm1",
+      google_calendar_id: "primary",
+      google_synced_at: "2026-08-25T03:15:00+00:00",
+      google_out_of_date: false,
+      ...overrides,
+    });
+
+  it("summarises the sync state", () => {
+    expect(googleSummary(schedule(), TOKYO)).toBe("Chưa đồng bộ");
+    expect(googleSummary(linked(), TOKYO)).toContain("Đã đồng bộ");
+    expect(googleSummary(linked({ google_out_of_date: true }), TOKYO)).toContain(
+      "cần đồng bộ lại",
+    );
+  });
+
+  it("shows the sync time in the timezone being viewed", () => {
+    // 03:15 UTC is 12:15 in Tokyo and 10:15 in Saigon.
+    expect(googleSummary(linked(), TOKYO)).toContain("12:15");
+    expect(googleSummary(linked(), SAIGON)).toContain("10:15");
+  });
+
+  it("says nothing about Google when the status has not loaded", () => {
+    const panel = renderDetail(schedule(), handlers, TOKYO, COUNTRIES);
+    expect(panel.textContent).not.toContain("Google Calendar");
+  });
+
+  it("offers a sync button when the integration is on", () => {
+    const panel = renderDetail(schedule(), handlers, TOKYO, COUNTRIES, enabled);
+    const labels = [...panel.querySelectorAll(".actions .btn")].map((b) => b.textContent);
+    expect(labels).toContain("Đồng bộ Google");
+    expect(labels).not.toContain("Bỏ liên kết");
+  });
+
+  it("offers re-sync and unlink once the schedule is linked", () => {
+    const panel = renderDetail(linked(), handlers, TOKYO, COUNTRIES, enabled);
+    const labels = [...panel.querySelectorAll(".actions .btn")].map((b) => b.textContent);
+    expect(labels).toContain("Đồng bộ lại");
+    expect(labels).toContain("Bỏ liên kết");
+  });
+
+  it("explains why syncing is unavailable instead of hiding it", () => {
+    const panel = renderDetail(schedule(), handlers, TOKYO, COUNTRIES, disabled);
+    const labels = [...panel.querySelectorAll(".actions .btn")].map((b) => b.textContent);
+    expect(labels).not.toContain("Đồng bộ Google");
+    expect(panel.querySelector(".panel__note")?.textContent).toContain("GOOGLE_CALENDAR_MODE");
+  });
+
+  it("reports the clicks", () => {
+    const onGoogleSync = vi.fn();
+    const onGoogleUnlink = vi.fn();
+    const panel = renderDetail(
+      linked(),
+      { ...handlers, onGoogleSync, onGoogleUnlink },
+      TOKYO,
+      COUNTRIES,
+      enabled,
+    );
+    const buttons = [...panel.querySelectorAll<HTMLButtonElement>(".actions .btn")];
+    buttons.find((b) => b.textContent === "Đồng bộ lại")!.click();
+    buttons.find((b) => b.textContent === "Bỏ liên kết")!.click();
+    expect(onGoogleSync).toHaveBeenCalledOnce();
+    expect(onGoogleUnlink).toHaveBeenCalledOnce();
   });
 });

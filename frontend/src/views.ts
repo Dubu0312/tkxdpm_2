@@ -15,7 +15,7 @@ import {
   toInputValue,
   wallClockDeltaMinutes,
 } from "./format";
-import type { Country, Limits, Schedule, ScheduleInput } from "./types";
+import type { Country, GoogleStatus, Limits, Schedule, ScheduleInput } from "./types";
 
 import type { ApiError } from "./api";
 
@@ -120,11 +120,28 @@ export function countryLabel(code: string, countries: Country[]): string {
   return match ? `${match.name} (${match.code})` : code;
 }
 
+/** "Đã đồng bộ · 25/08/2026 10:15" / "Cần đồng bộ lại" / "Chưa đồng bộ". */
+export function googleSummary(schedule: Schedule, viewTimezone: string): string {
+  if (schedule.google_event_id === null) return "Chưa đồng bộ";
+  if (schedule.google_out_of_date) return "Đã đổi sau lần đồng bộ cuối — cần đồng bộ lại";
+  if (schedule.google_synced_at === null) return "Đã liên kết";
+  return (
+    `Đã đồng bộ · ${formatDate(schedule.google_synced_at, viewTimezone)} ` +
+    `${formatTime(schedule.google_synced_at, viewTimezone)}`
+  );
+}
+
 export function renderDetail(
   schedule: Schedule,
-  handlers: { onEdit: () => void; onDelete: () => void },
+  handlers: {
+    onEdit: () => void;
+    onDelete: () => void;
+    onGoogleSync?: () => void;
+    onGoogleUnlink?: () => void;
+  },
   viewTimezone: string,
   countries: Country[] = [],
+  google: GoogleStatus | null = null,
 ): HTMLElement {
   const panel = el("article", "panel");
   panel.append(el("h2", undefined, schedule.title));
@@ -161,6 +178,7 @@ export function renderDetail(
   addFact("Quốc gia", schedule.country ? countryLabel(schedule.country, countries) : "—");
   addFact("Địa điểm", schedule.location || "—");
   addFact("Mô tả", schedule.description || "—");
+  if (google !== null) addFact("Google Calendar", googleSummary(schedule, viewTimezone));
   addFact(
     "Tạo lúc",
     `${formatDate(schedule.created_at, viewTimezone)} ` +
@@ -176,7 +194,29 @@ export function renderDetail(
   remove.type = "button";
   remove.addEventListener("click", handlers.onDelete);
   actions.append(edit, remove);
+
+  if (google !== null && google.enabled) {
+    const label = schedule.google_event_id === null ? "Đồng bộ Google" : "Đồng bộ lại";
+    const sync = el("button", "btn", label);
+    sync.type = "button";
+    if (handlers.onGoogleSync) sync.addEventListener("click", handlers.onGoogleSync);
+    actions.append(sync);
+
+    if (schedule.google_event_id !== null) {
+      const unlink = el("button", "btn", "Bỏ liên kết");
+      unlink.type = "button";
+      if (handlers.onGoogleUnlink) unlink.addEventListener("click", handlers.onGoogleUnlink);
+      actions.append(unlink);
+    }
+  }
+
   panel.append(actions);
+
+  // Say why syncing is unavailable, or that this is only the stand-in mode,
+  // rather than hiding the feature silently.
+  if (google !== null && google.detail) {
+    panel.append(el("p", "panel__note", google.detail));
+  }
 
   return panel;
 }

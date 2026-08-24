@@ -194,6 +194,12 @@ body {
   font-size: 0.875rem;
 }
 
+.panel__note {
+  margin: 0.8rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 .facts {
   display: grid;
   grid-template-columns: 7rem 1fr;

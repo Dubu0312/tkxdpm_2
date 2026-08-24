@@ -16,6 +16,12 @@ export interface Schedule {
   notify_at: string | null;
   /** When the reminder was delivered (UTC); null while still pending. */
   notified_at: string | null;
+  /** Linked Google Calendar event; null when the schedule has never been synced. */
+  google_event_id: string | null;
+  google_calendar_id: string | null;
+  google_synced_at: string | null;
+  /** True when the schedule changed after its last successful push to Google. */
+  google_out_of_date: boolean;
   /** ISO-8601 in UTC. */
   created_at: string;
   updated_at: string;
@@ -51,4 +57,12 @@ export interface Limits {
   min_duration_minutes: number;
   max_duration_minutes: number;
   default_timezone: string;
+}
+
+/** Whether Google Calendar syncing is available, and how. */
+export interface GoogleStatus {
+  mode: string;
+  enabled: boolean;
+  calendar_id: string;
+  detail: string | null;
 }

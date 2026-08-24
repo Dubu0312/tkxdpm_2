@@ -5,14 +5,16 @@ during validation (``app.schemas``), rows store UTC, and responses are rendered
 back into each schedule's own timezone by ``ScheduleRead.from_model``.
 """
 
+import logging
 from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
-from app import holiday_calendar, notifications
+from app import google_calendar, holiday_calendar, notifications
 from app.config import settings
 from app.db import get_session
 from app.models import Schedule
@@ -26,6 +28,8 @@ from app.schemas import (
     ScheduleRead,
     ScheduleUpdate,
 )
+
+logger = logging.getLogger("app.schedules")
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
@@ -207,11 +211,106 @@ def update_schedule(
         setattr(schedule, field, value)
     session.commit()
     session.refresh(schedule)
+    _push_google_update(schedule, session)
     return ScheduleRead.from_model(schedule)
+
+
+def _push_google_update(schedule: Schedule, session: Session) -> None:
+    """Keep a linked Google event in step with an edited schedule.
+
+    Only already-linked schedules are pushed — syncing is opt-in per schedule.
+    A failure is not fatal: the edit stands and ``google_out_of_date`` turns
+    true, so the UI can offer to sync again rather than drifting in silence.
+    """
+    if not schedule.google_event_id:
+        return
+    try:
+        event_id, synced_at = google_calendar.push(schedule)
+    except google_calendar.CalendarUnavailable as error:
+        logger.warning("Could not update Google event %s: %s", schedule.google_event_id, error)
+        return
+    _save_google_link(session, schedule, event_id, synced_at)
+
+
+def _save_google_link(
+    session: Session,
+    schedule: Schedule,
+    event_id: str | None,
+    synced_at: datetime | None,
+) -> None:
+    """Store the link without counting the sync as a change to the schedule.
+
+    ``updated_at`` means "the schedule's content changed". Letting the sync bump
+    it would make every freshly synced schedule look out of date against its own
+    push, so the previous value is written back.
+    """
+    unchanged = schedule.updated_at
+    schedule.google_event_id = event_id
+    schedule.google_calendar_id = settings.google_calendar_id if event_id else None
+    schedule.google_synced_at = synced_at
+
+    # Re-assigning the same value is not a change as far as SQLAlchemy is
+    # concerned, so the column would fall back to its onupdate default. Marking
+    # it dirty puts the old value in the UPDATE and keeps the timestamp still.
+    schedule.updated_at = unchanged
+    flag_modified(schedule, "updated_at")
+
+    session.commit()
+    session.refresh(schedule)
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_schedule(schedule_id: int, session: SessionDep) -> None:
     schedule = _get_or_404(session, schedule_id)
+    _remove_google_event(schedule)
     session.delete(schedule)
     session.commit()
+
+
+def _remove_google_event(schedule: Schedule) -> None:
+    """Best-effort removal of the linked Google event.
+
+    A calendar that cannot be reached must not stop someone deleting their own
+    schedule, so a failure is logged and the local delete goes ahead. The trade
+    off is a possible orphan event on the Google side.
+    """
+    if not schedule.google_event_id:
+        return
+    try:
+        google_calendar.remove(schedule)
+    except google_calendar.CalendarUnavailable as error:
+        logger.warning("Could not delete Google event %s: %s", schedule.google_event_id, error)
+
+
+@router.post("/{schedule_id}/google", response_model=ScheduleRead)
+def sync_to_google(schedule_id: int, session: SessionDep) -> ScheduleRead:
+    """Create or update this schedule's Google Calendar event.
+
+    Safe to call repeatedly: the event id is derived from the schedule, so a
+    second call updates the same event instead of making another one.
+    """
+    schedule = _get_or_404(session, schedule_id)
+    try:
+        event_id, synced_at = google_calendar.push(schedule)
+    except google_calendar.CalendarUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    _save_google_link(session, schedule, event_id, synced_at)
+    return ScheduleRead.from_model(schedule)
+
+
+@router.delete("/{schedule_id}/google", response_model=ScheduleRead)
+def unlink_from_google(schedule_id: int, session: SessionDep) -> ScheduleRead:
+    """Delete the Google event and forget the link, keeping the schedule."""
+    schedule = _get_or_404(session, schedule_id)
+    try:
+        google_calendar.remove(schedule)
+    except google_calendar.CalendarUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    _save_google_link(session, schedule, None, None)
+    return ScheduleRead.from_model(schedule)

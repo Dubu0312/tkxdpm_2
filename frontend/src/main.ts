@@ -3,13 +3,16 @@ import {
   ApiError,
   createSchedule,
   deleteSchedule,
+  fetchGoogleStatus,
   fetchLimits,
   listCountries,
   listSchedules,
+  syncToGoogle,
+  unlinkFromGoogle,
   updateSchedule,
 } from "./api";
 import { browserTimezone, toApiValue, wallClockDeltaMinutes } from "./format";
-import type { Country, Limits, Schedule, ScheduleInput } from "./types";
+import type { Country, GoogleStatus, Limits, Schedule, ScheduleInput } from "./types";
 import {
   renderDetail,
   renderError,
@@ -38,6 +41,8 @@ interface State {
   countries: Country[];
   /** Duration limits served by the backend; null until they are loaded. */
   limits: Limits | null;
+  /** Whether Google Calendar syncing is available; null until loaded. */
+  google: GoogleStatus | null;
 }
 
 const state: State = {
@@ -49,6 +54,7 @@ const state: State = {
   viewTimezone: browserTimezone(),
   countries: [],
   limits: null,
+  google: null,
 };
 
 const listSlot = document.querySelector<HTMLElement>("#list")!;
@@ -118,6 +124,9 @@ async function refresh(): Promise<void> {
     if (state.limits === null) {
       state.limits = await fetchLimits();
     }
+    if (state.google === null) {
+      state.google = await fetchGoogleStatus();
+    }
     state.schedules = await listSchedules();
     state.error = null;
     // The draft belongs to the form, not to this load: a refresh finishing in
@@ -158,6 +167,28 @@ async function submitEdit(id: number, input: ScheduleInput): Promise<void> {
     setView({ name: "detail", id });
   } catch (error) {
     fail(error, input);
+  }
+}
+
+async function syncGoogle(schedule: Schedule): Promise<void> {
+  try {
+    await syncToGoogle(schedule.id);
+    state.error = null;
+    state.schedules = await listSchedules();
+    render();
+  } catch (error) {
+    fail(error);
+  }
+}
+
+async function unlinkGoogle(schedule: Schedule): Promise<void> {
+  try {
+    await unlinkFromGoogle(schedule.id);
+    state.error = null;
+    state.schedules = await listSchedules();
+    render();
+  } catch (error) {
+    fail(error);
   }
 }
 
@@ -210,9 +241,12 @@ function renderPanel(): HTMLElement {
         {
           onEdit: () => setView({ name: "edit", id: schedule.id }),
           onDelete: () => void confirmDelete(schedule),
+          onGoogleSync: () => void syncGoogle(schedule),
+          onGoogleUnlink: () => void unlinkGoogle(schedule),
         },
         state.viewTimezone,
         state.countries,
+        state.google,
       );
     }
     default:

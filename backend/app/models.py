@@ -44,6 +44,12 @@ class Schedule(Base):
     reminder_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: When the reminder was actually delivered (UTC); None = not sent yet.
     notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: Id of the linked Google Calendar event; None = never synced.
+    google_event_id: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Calendar the event lives in (Google allows more than one).
+    google_calendar_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Last successful push to Google (UTC).
+    google_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow, onupdate=utcnow
@@ -60,3 +66,14 @@ class Schedule(Base):
         if self.reminder_minutes is None:
             return None
         return self.start_time - timedelta(minutes=self.reminder_minutes)
+
+    @property
+    def google_out_of_date(self) -> bool:
+        """True when the schedule changed after its last push to Google.
+
+        Lets the UI say "needs re-syncing" instead of quietly drifting when a
+        push fails.
+        """
+        if self.google_event_id is None or self.google_synced_at is None:
+            return False
+        return self.updated_at > self.google_synced_at

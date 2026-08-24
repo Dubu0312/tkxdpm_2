@@ -8,8 +8,9 @@ và mô tả (ba trường sau không bắt buộc), kèm mốc `created_at` / `
 Lịch có thể được tạo ở bất kỳ múi giờ nào và xem lại ở múi giờ khác mà không đổi
 thời điểm thực, và có thể kéo dài qua nửa đêm. Backend từ chối lịch bị trùng khung
 giờ với lịch đã có, và từ chối lịch rơi vào ngày nghỉ chính thức của quốc gia được
-chọn. Mỗi lịch có thể đặt một mốc nhắc trước (`reminder_minutes`), và phải dài
-trong khoảng cho phép (mặc định 15 phút – 7 ngày).
+chọn. Mỗi lịch có thể đặt một mốc nhắc trước (`reminder_minutes`), phải dài trong
+khoảng cho phép (mặc định 15 phút – 7 ngày), và có thể đồng bộ sang Google
+Calendar (tùy chọn, mặc định tắt).
 
 ## Tech stack
 
@@ -33,13 +34,15 @@ trong khoảng cho phép (mặc định 15 phút – 7 ngày).
 │   │   ├── schemas.py      # Pydantic schemas + timezone conversion
 │   │   ├── holiday_calendar.py # public-holiday lookup (single source)
 │   │   ├── notifications.py    # when a reminder is due, and dispatching it
+│   │   ├── google_calendar.py  # Google Calendar integration (single source)
 │   │   ├── routers/
 │   │   │   ├── schedules.py# CRUD endpoints under /api/schedules
 │   │   │   ├── countries.py# GET /api/countries
 │   │   │   ├── config.py   # GET /api/config (rules served to the frontend)
 │   │   │   └── notifications.py # /api/notifications
 │   │   └── main.py         # FastAPI app: GET /, GET /health, router
-│   ├── migrate.py          # one-off upgrade of pre-timezone databases
+│   ├── migrate.py          # one-off upgrade of older databases
+│   ├── google_auth.py      # one-off Google OAuth consent flow
 │   ├── tests/              # pytest
 │   ├── run.py              # dev entry point (reads host/port from .env)
 │   ├── requirements.in     # direct runtime deps
@@ -54,6 +57,7 @@ trong khoảng cho phép (mặc định 15 phút – 7 ngày).
 │       ├── views.ts        # list / detail / form rendering
 │       └── main.ts         # app state + wiring
 ├── data/                   # local SQLite files (contents not committed)
+├── secrets/                # Google credentials (contents not committed)
 ├── docs/prompt-driven-log.md
 └── .env.example            # template; copy to .env (never commit .env)
 ```
@@ -153,6 +157,9 @@ Base URL: `http://127.0.0.1:8001`.
 | DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
 | GET    | `/api/countries`       | Danh sách quốc gia kiểm tra được ngày nghỉ  |
 | GET    | `/api/config`          | Giới hạn thời lượng + múi giờ mặc định      |
+| GET    | `/api/config/google`   | Trạng thái tích hợp Google Calendar         |
+| POST   | `/api/schedules/{id}/google`   | Tạo/cập nhật event Google cho lịch  |
+| DELETE | `/api/schedules/{id}/google`   | Xóa event Google, giữ lại lịch      |
 | GET    | `/api/notifications`   | Nhắc đang chờ (chưa gửi, lịch chưa bắt đầu) |
 | GET    | `/api/notifications/due` | Nhắc đã đến lúc gửi nhưng chưa gửi        |
 | POST   | `/api/notifications/dispatch` | Gửi ngay các nhắc đang đến hạn      |
@@ -364,6 +371,64 @@ curl -X POST http://127.0.0.1:8001/api/schedules \
   -d '{"title":"Họp nhóm","start_time":"2026-09-01T09:00:00","end_time":"2026-09-01T10:30:00","timezone":"Asia/Ho_Chi_Minh"}'
 ```
 
+## Google Calendar (tùy chọn)
+
+Tích hợp **mặc định tắt** — clone về là chạy được ngay, không cần credential nào.
+
+Ba chế độ, đặt bằng `GOOGLE_CALENDAR_MODE`:
+
+| Chế độ | Ý nghĩa |
+| --- | --- |
+| `disabled` (mặc định) | Không tích hợp. Các endpoint sync trả `503` kèm hướng dẫn bật. |
+| `memory` | Bản mô phỏng chạy trong tiến trình, cùng luật insert/update/delete với API thật. Dùng để **demo và test luồng mà không cần credential**. Đây **không** phải đồng bộ thật. |
+| `google` | Google Calendar API thật, dùng OAuth. |
+
+### Cấu hình credential thật
+
+1. Vào [Google Cloud Console](https://console.cloud.google.com/), tạo project và
+   bật **Google Calendar API**.
+2. Tạo **OAuth client ID** loại **Desktop app**, tải file JSON về và lưu thành
+   `secrets/google_client_secret.json`.
+3. Chạy consent flow một lần — nó mở trình duyệt và ghi token:
+
+   ```bash
+   source .venv/bin/activate
+   cd backend && python google_auth.py
+   ```
+
+4. Bật tích hợp trong `.env`:
+
+   ```bash
+   GOOGLE_CALENDAR_MODE=google
+   GOOGLE_CALENDAR_ID=primary          # hoặc id của một calendar khác
+   ```
+
+Cả `secrets/google_client_secret.json` lẫn `secrets/google_token.json` đều nằm
+trong `.gitignore` và **không bao giờ được commit**.
+
+### Cách đồng bộ hoạt động
+
+* **Opt-in theo từng lịch**: bấm "Đồng bộ Google" ở panel chi tiết, hoặc gọi
+  `POST /api/schedules/{id}/google`.
+* **Liên kết**: id event Google được lưu trên chính dòng lịch trong SQLite
+  (`google_event_id`, `google_calendar_id`, `google_synced_at`).
+* **Không tạo trùng**: id event được **suy ra từ id lịch**, nên gọi sync bao
+  nhiêu lần cũng chỉ tác động đúng một event. Nếu liên kết bị mất ở phía local,
+  lệnh insert va chạm và được chuyển thành update thay vì tạo event thứ hai; nếu
+  event bị xóa ở phía Google thì nó được tạo lại.
+* **Thời gian**: gửi `dateTime` kèm offset **và** `timeZone` là tên IANA, nên
+  Google nhận đủ cả thời điểm thực lẫn múi giờ gốc của lịch.
+* **Khi lịch thay đổi**: lịch **đã liên kết** được đẩy cập nhật ngay sau khi sửa.
+  Nếu đẩy thất bại thì bản sửa vẫn được lưu và `google_out_of_date` bật lên để
+  giao diện mời đồng bộ lại, thay vì lệch nhau trong im lặng.
+* **Khi lịch bị xóa**: event Google được xóa theo. Nếu không gọi được Google thì
+  vẫn xóa lịch ở local (không chặn người dùng) và ghi cảnh báo vào log.
+* **Bỏ liên kết**: `DELETE /api/schedules/{id}/google` xóa event nhưng giữ lịch.
+
+Giới hạn hiện tại: đồng bộ **một chiều** (app → Google), chưa đọc ngược thay đổi
+từ Google; và nhánh `google` thật chưa được chạy tự động trong CI vì cần
+credential — chỉ nhánh `memory` được phủ bằng test.
+
 ## Tests and linting
 
 ```bash
@@ -387,6 +452,9 @@ Nếu database được tạo bằng phiên bản cũ hơn, app sẽ báo lỗi 
 cd backend
 python migrate.py --timezone Asia/Ho_Chi_Minh   # múi giờ các bản ghi cũ đã nhập
 ```
+
+Các cột được thêm qua nhiều round (`timezone`, `country`, `reminder_minutes`,
+`notified_at`, `google_event_id`, …) đều do script này bổ sung.
 
 Script này thêm các cột còn thiếu và đổi các mốc thời gian cũ (giờ địa phương)
 sang UTC. Chạy lại lần nữa là no-op. The `data/` directory is tracked but its

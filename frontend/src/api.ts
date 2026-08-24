@@ -1,5 +1,12 @@
 import { API_BASE_URL } from "./env";
-import type { Country, HolidayHit, Limits, Schedule, ScheduleInput } from "./types";
+import type {
+  Country,
+  GoogleStatus,
+  HolidayHit,
+  Limits,
+  Schedule,
+  ScheduleInput,
+} from "./types";
 
 export interface HealthResponse {
   status: string;
@@ -156,3 +163,12 @@ export const deleteSchedule = (id: number): Promise<void> =>
 export const listCountries = (): Promise<Country[]> => request<Country[]>("/api/countries");
 
 export const fetchLimits = (): Promise<Limits> => request<Limits>("/api/config");
+
+export const fetchGoogleStatus = (): Promise<GoogleStatus> =>
+  request<GoogleStatus>("/api/config/google");
+
+export const syncToGoogle = (id: number): Promise<Schedule> =>
+  request<Schedule>(`/api/schedules/${id}/google`, { method: "POST" });
+
+export const unlinkFromGoogle = (id: number): Promise<Schedule> =>
+  request<Schedule>(`/api/schedules/${id}/google`, { method: "DELETE" });

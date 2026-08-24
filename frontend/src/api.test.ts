@@ -4,9 +4,12 @@ import {
   ApiError,
   createSchedule,
   deleteSchedule,
+  fetchGoogleStatus,
   fetchLimits,
   listCountries,
   listSchedules,
+  syncToGoogle,
+  unlinkFromGoogle,
 } from "./api";
 
 const INPUT = {
@@ -82,6 +85,10 @@ describe("api client", () => {
       reminder_minutes: null,
       notify_at: null,
       notified_at: null,
+      google_event_id: null,
+      google_calendar_id: null,
+      google_synced_at: null,
+      google_out_of_date: false,
       created_at: "2026-08-25T08:00:00+00:00",
       updated_at: "2026-08-25T08:00:00+00:00",
     };
@@ -149,6 +156,30 @@ describe("api client", () => {
     const error = (await createSchedule(INPUT).catch((err: unknown) => err)) as ApiError;
     expect(error.detail).toBeNull();
     expect(error.message).toContain("end_time must be after start_time");
+  });
+
+  it("fetches the Google status", async () => {
+    const status = { mode: "memory", enabled: true, calendar_id: "primary", detail: null };
+    mockFetch(new Response(JSON.stringify(status), { status: 200 }));
+    expect(await fetchGoogleStatus()).toEqual(status);
+  });
+
+  it("posts to sync a schedule and deletes to unlink it", async () => {
+    const first = mockFetch(new Response(JSON.stringify({ id: 1 }), { status: 200 }));
+    await syncToGoogle(1);
+    expect(first.mock.calls[0]![0]).toContain("/api/schedules/1/google");
+    expect(first.mock.calls[0]![1]?.method).toBe("POST");
+
+    const second = mockFetch(new Response(JSON.stringify({ id: 1 }), { status: 200 }));
+    await unlinkFromGoogle(1);
+    expect(second.mock.calls[0]![1]?.method).toBe("DELETE");
+  });
+
+  it("surfaces a 503 when the integration is off", async () => {
+    mockFetch(new Response(JSON.stringify({ detail: "Google Calendar integration is disabled." }), { status: 503 }));
+    const error = (await syncToGoogle(1).catch((err: unknown) => err)) as ApiError;
+    expect(error.status).toBe(503);
+    expect(error.message).toContain("disabled");
   });
 
   it("fetches the duration limits", async () => {

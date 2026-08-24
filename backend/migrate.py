@@ -83,6 +83,15 @@ def _add_reminder_columns() -> None:
     print("Added the reminder columns (existing schedules keep no reminder).")
 
 
+def _add_google_columns() -> None:
+    """Add the nullable columns linking a schedule to its Google event."""
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE schedules ADD COLUMN google_event_id VARCHAR(1024)"))
+        conn.execute(text("ALTER TABLE schedules ADD COLUMN google_calendar_id VARCHAR(255)"))
+        conn.execute(text("ALTER TABLE schedules ADD COLUMN google_synced_at DATETIME"))
+    print("Added the Google Calendar columns (existing schedules are unlinked).")
+
+
 def migrate(timezone_name: str) -> int:
     """Apply every pending upgrade. Returns the number of rows converted to UTC."""
     columns = _columns()
@@ -100,6 +109,9 @@ def migrate(timezone_name: str) -> int:
         applied = True
     if "reminder_minutes" not in columns:
         _add_reminder_columns()
+        applied = True
+    if "google_event_id" not in columns:
+        _add_google_columns()
         applied = True
 
     if not applied:

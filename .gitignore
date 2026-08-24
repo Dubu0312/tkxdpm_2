@@ -61,6 +61,13 @@ secrets.json
 service-account*.json
 .secrets/
 
+# Google Calendar OAuth: client secret and stored token, never committed.
+# Only the note explaining what belongs here is tracked.
+secrets/*
+!secrets/README.md
+*token*.json
+client_secret*.json
+
 # ---------- Database (SQLite local) ----------
 *.db
 *.sqlite

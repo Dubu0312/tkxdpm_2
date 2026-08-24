@@ -142,11 +142,23 @@ class ScheduleRead(ScheduleFields):
     notify_at: datetime | None
     #: When the reminder was delivered (UTC); null while it is still pending.
     notified_at: datetime | None
+    #: Linked Google Calendar event, if the schedule has been synced.
+    google_event_id: str | None
+    google_calendar_id: str | None
+    google_synced_at: datetime | None
+    #: True when the schedule changed after its last successful push.
+    google_out_of_date: bool
     created_at: datetime
     updated_at: datetime
 
     @field_serializer(
-        "start_time", "end_time", "notify_at", "notified_at", "created_at", "updated_at"
+        "start_time",
+        "end_time",
+        "notify_at",
+        "notified_at",
+        "google_synced_at",
+        "created_at",
+        "updated_at",
     )
     def _explicit_offset(self, value: datetime | None) -> str | None:
         """Render every instant with a numeric offset, never the bare "Z" form."""
@@ -169,6 +181,14 @@ class ScheduleRead(ScheduleFields):
             notified_at=(
                 None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
             ),
+            google_event_id=schedule.google_event_id,
+            google_calendar_id=schedule.google_calendar_id,
+            google_synced_at=(
+                None
+                if schedule.google_synced_at is None
+                else schedule.google_synced_at.replace(tzinfo=UTC)
+            ),
+            google_out_of_date=schedule.google_out_of_date,
             created_at=schedule.created_at.replace(tzinfo=UTC),
             updated_at=schedule.updated_at.replace(tzinfo=UTC),
         )
@@ -258,3 +278,13 @@ class LimitsRead(BaseModel):
     min_duration_minutes: int
     max_duration_minutes: int
     default_timezone: str
+
+
+class GoogleStatusRead(BaseModel):
+    """Whether the Google Calendar integration is usable, and how."""
+
+    mode: str
+    enabled: bool
+    calendar_id: str
+    #: Present only when something must be configured before syncing works.
+    detail: str | None = None
