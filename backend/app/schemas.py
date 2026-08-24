@@ -7,6 +7,7 @@ comparable.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -50,3 +51,11 @@ class ScheduleRead(ScheduleBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class ConflictDetail(BaseModel):
+    """Body of a 409 response: the schedules the request would overlap with."""
+
+    code: Literal["schedule_conflict"] = "schedule_conflict"
+    message: str
+    conflicts: list[ScheduleRead]

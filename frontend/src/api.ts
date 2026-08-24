@@ -10,11 +10,14 @@ export interface HealthResponse {
 /** Error carrying the message the backend sent back. */
 export class ApiError extends Error {
   readonly status: number;
+  /** Schedules the rejected time range overlaps (HTTP 409 only). */
+  readonly conflicts: Schedule[];
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, conflicts: Schedule[] = []) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.conflicts = conflicts;
   }
 }
 
@@ -23,12 +26,34 @@ interface ValidationItem {
   loc?: (string | number)[];
 }
 
-function messageFromBody(body: unknown, fallback: string): string {
-  if (typeof body !== "object" || body === null || !("detail" in body)) {
-    return fallback;
+interface ConflictDetail {
+  code: "schedule_conflict";
+  message: string;
+  conflicts: Schedule[];
+}
+
+function isConflictDetail(detail: unknown): detail is ConflictDetail {
+  return (
+    typeof detail === "object" &&
+    detail !== null &&
+    (detail as { code?: unknown }).code === "schedule_conflict" &&
+    Array.isArray((detail as { conflicts?: unknown }).conflicts)
+  );
+}
+
+/** Turns a FastAPI error body into an ApiError, keeping any conflict payload. */
+function errorFromBody(body: unknown, status: number, fallback: string): ApiError {
+  const detail =
+    typeof body === "object" && body !== null && "detail" in body
+      ? (body as { detail: unknown }).detail
+      : undefined;
+
+  if (isConflictDetail(detail)) {
+    return new ApiError(detail.message, status, detail.conflicts);
   }
-  const detail = (body as { detail: unknown }).detail;
-  if (typeof detail === "string") return detail;
+  if (typeof detail === "string") {
+    return new ApiError(detail, status);
+  }
   if (Array.isArray(detail)) {
     const messages = (detail as ValidationItem[])
       .map((item) => {
@@ -36,9 +61,9 @@ function messageFromBody(body: unknown, fallback: string): string {
         return field ? `${field}: ${item.msg ?? ""}` : (item.msg ?? "");
       })
       .filter(Boolean);
-    if (messages.length > 0) return messages.join("; ");
+    if (messages.length > 0) return new ApiError(messages.join("; "), status);
   }
-  return fallback;
+  return new ApiError(fallback, status);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -54,10 +79,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new ApiError(
-      messageFromBody(body, `Yêu cầu thất bại (HTTP ${response.status})`),
-      response.status,
-    );
+    throw errorFromBody(body, response.status, `Yêu cầu thất bại (HTTP ${response.status})`);
   }
 
   if (response.status === 204) return undefined as T;

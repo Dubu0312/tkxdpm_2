@@ -55,6 +55,39 @@ describe("api client", () => {
     );
   });
 
+  it("keeps the conflicting schedules from a 409 response", async () => {
+    const conflict = {
+      id: 3,
+      title: "Họp nhóm",
+      description: null,
+      location: null,
+      start_time: "2026-09-01T09:00:00",
+      end_time: "2026-09-01T10:00:00",
+      created_at: "2026-08-25T08:00:00",
+      updated_at: "2026-08-25T08:00:00",
+    };
+    const body = {
+      detail: {
+        code: "schedule_conflict",
+        message: "Time range overlaps 1 existing schedule",
+        conflicts: [conflict],
+      },
+    };
+    mockFetch(new Response(JSON.stringify(body), { status: 409 }));
+
+    const error = (await createSchedule(INPUT).catch((err: unknown) => err)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(409);
+    expect(error.message).toBe("Time range overlaps 1 existing schedule");
+    expect(error.conflicts).toEqual([conflict]);
+  });
+
+  it("leaves conflicts empty for other errors", async () => {
+    mockFetch(new Response(JSON.stringify({ detail: "Schedule not found" }), { status: 404 }));
+    const error = (await listSchedules().catch((err: unknown) => err)) as ApiError;
+    expect(error.conflicts).toEqual([]);
+  });
+
   it("reports an unreachable backend instead of throwing a raw fetch error", async () => {
     mockFetch(new TypeError("Failed to fetch"));
     const error = await listSchedules().catch((err: unknown) => err);

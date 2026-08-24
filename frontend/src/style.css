@@ -67,6 +67,26 @@ body {
   font-size: 0.9rem;
 }
 
+.error__text {
+  margin: 0;
+  font-weight: 500;
+}
+
+.error__list {
+  margin: 0.35rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.error__list li {
+  margin: 0.15rem 0;
+}
+
+.error__hint {
+  margin: 0.4rem 0 0;
+  font-weight: 400;
+  opacity: 0.85;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(16rem, 22rem) 1fr;

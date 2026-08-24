@@ -4,7 +4,8 @@
 
 Chức năng hiện có: tạo lịch, xem danh sách, xem chi tiết, chỉnh sửa và xóa lịch.
 Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, địa điểm và mô tả (hai trường
-sau không bắt buộc), kèm mốc `created_at` / `updated_at`.
+sau không bắt buộc), kèm mốc `created_at` / `updated_at`. Backend từ chối các lịch
+bị trùng khung giờ với lịch đã có.
 
 ## Tech stack
 
@@ -147,6 +148,32 @@ Schedule fields: `title` (bắt buộc, ≤200 ký tự), `start_time`, `end_tim
 buộc, `end_time` phải sau `start_time`), `location` và `description` (tùy chọn),
 cùng `id`, `created_at`, `updated_at` do server sinh ra. Dữ liệu không hợp lệ trả
 về `422` kèm thông báo, id không tồn tại trả về `404`.
+
+### Xung đột thời gian
+
+`POST` và `PUT` từ chối lịch có khung giờ chồng lấn lịch đã tồn tại và trả về
+`409 Conflict`. Hai khoảng thời gian được coi là chồng lấn khi mỗi khoảng bắt đầu
+trước khi khoảng kia kết thúc — nên hai lịch **liền kề** (một lịch kết thúc đúng
+lúc lịch kia bắt đầu) vẫn hợp lệ. Khi cập nhật, lịch đang sửa không tự xung đột
+với chính nó.
+
+Kiểm tra này nằm ở backend và là nguồn duy nhất quyết định hợp lệ hay không;
+frontend chỉ hiển thị lại kết quả, không kiểm tra trùng lịch riêng.
+
+Body của `409`:
+
+```json
+{
+  "detail": {
+    "code": "schedule_conflict",
+    "message": "Time range overlaps 1 existing schedule",
+    "conflicts": [ { "id": 1, "title": "Họp nhóm", "start_time": "...", "end_time": "...", "...": "..." } ]
+  }
+}
+```
+
+Frontend dùng danh sách `conflicts` để hiện tên và khung giờ của lịch bị trùng,
+đồng thời giữ nguyên dữ liệu đang nhập trong form.
 
 Ví dụ:
 

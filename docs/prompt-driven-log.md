@@ -216,3 +216,95 @@ cầu backend đang chạy nên không phù hợp để nằm trong bộ test m�
 6. Port mặc định vẫn là **8001** (port 8000 bị chiếm trên máy dev hiện tại).
 7. Cảnh báo deprecation `httpx` → `httpx2` của Starlette TestClient vẫn còn; chưa
    ảnh hưởng.
+
+---
+
+## Round 2 — Add scheduling conflict detection
+
+**Ngày:** 2026-08-25
+**Commit:** `round 02: add scheduling conflict detection`
+
+### Yêu cầu
+
+Khi tạo hoặc chỉnh sửa lịch, không cho phép lịch mới overlap với lịch đã tồn tại.
+Hai lịch liền kề (một lịch kết thúc đúng lúc lịch kia bắt đầu) vẫn hợp lệ. Logic
+phải nằm ở backend chứ không chỉ ở frontend; frontend hiển thị lỗi rõ ràng khi bị
+từ chối. Không duplicate business logic, không đụng phần không liên quan.
+
+### Quyết định triển khai
+
+- **Một nguồn logic duy nhất ở backend.** `find_conflicts()` trong
+  `backend/app/routers/schedules.py` là nơi duy nhất định nghĩa thế nào là trùng
+  giờ; cả `POST` và `PUT` gọi chung qua `_reject_conflicts()`. Frontend **không**
+  tự kiểm tra trùng lịch — nếu làm sẽ là bản sao thứ hai của cùng một quy tắc.
+- **Điều kiện overlap**: `existing.start_time < new.end_time AND
+  existing.end_time > new.start_time`. Dùng so sánh chặt (`<`, `>`) nên khoảng
+  chạm nhau (`10:00–11:00` sau `09:00–10:00`) không bị tính là xung đột — đúng
+  yêu cầu. Kiểm tra chạy bằng một câu SQL, không load toàn bộ bảng.
+- **Khi sửa**: truyền `exclude_id=schedule_id` để lịch không tự xung đột với
+  chính nó; nhờ vậy có thể đổi tiêu đề mà giữ nguyên giờ, hoặc thu hẹp khung giờ
+  nằm trong chính nó.
+- **HTTP 409 Conflict** (không phải 422) vì dữ liệu gửi lên hợp lệ về mặt cú
+  pháp, chỉ mâu thuẫn với trạng thái hiện có. Thứ tự kiểm tra: validate payload
+  (422) → tồn tại bản ghi (404) → xung đột (409).
+- **Body 409 có cấu trúc** (`schemas.ConflictDetail`: `code`, `message`,
+  `conflicts: list[ScheduleRead]`) thay vì chỉ một chuỗi. Backend nêu *sự thật*
+  (những lịch nào bị trùng), frontend lo phần *diễn đạt* — nhờ vậy thông báo
+  tiếng Việt nằm ở frontend, không lẫn vào backend.
+- **Giữ lại dữ liệu form khi bị từ chối.** Trước đây mọi lỗi submit đều làm form
+  render lại từ đầu và mất hết những gì đã nhập. Đã thêm `state.draft`: khi bị từ
+  chối, form giữ nguyên dữ liệu để người dùng chỉ cần sửa giờ. Đây là phần cần
+  thiết để "hiển thị lỗi rõ ràng" thực sự dùng được, và cũng khắc phục luôn cho
+  lỗi 422 sẵn có.
+
+### Đã thay đổi
+
+**Backend**
+- `app/schemas.py` — thêm `ConflictDetail`.
+- `app/routers/schedules.py` — thêm `find_conflicts()`, `_reject_conflicts()`,
+  `CONFLICT_RESPONSE` (khai báo 409 trong OpenAPI); `POST` và `PUT` gọi kiểm tra
+  trước khi ghi.
+
+**Frontend**
+- `src/api.ts` — `ApiError` mang thêm `conflicts`; hàm dựng lỗi nhận diện body
+  `schedule_conflict`, vẫn xử lý được lỗi chuỗi và mảng validation như cũ.
+- `src/views.ts` — thêm `renderError()` (liệt kê tên + khung giờ từng lịch bị
+  trùng, kèm nhắc rằng lịch liền kề vẫn hợp lệ); `renderForm()` nhận thêm tham số
+  `draft`.
+- `src/main.ts` — `state.error` chuyển thành `ApiError`, thêm `state.draft`.
+- `index.html` / `style.css` — khối `#error` từ `<p>` thành `<div>` để chứa danh
+  sách, thêm style cho danh sách xung đột.
+
+Không đụng tới model, database schema, endpoint `GET`/`DELETE` hay các phần khác.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **35 passed** (16 cũ + 19 mới, không có regression) |
+| Frontend test | `npm test` | **33 passed** (25 cũ + 8 mới) |
+| Frontend typecheck | `npm run typecheck` | Sạch |
+| Frontend build | `npm run build` | Built OK |
+| **End-to-end thật** | UI thật trong jsdom → backend `:8001` → SQLite | **1 passed**: tạo lịch 09:00–10:00 → tạo 09:30–10:30 bị **409** và UI hiện đúng tên + giờ lịch trùng, form giữ nguyên dữ liệu, DB không có bản ghi thừa → tạo 10:00–11:00 (liền kề) **201** → sửa lịch đó về 09:15–09:45 bị **409** và bản ghi không đổi → sửa tiêu đề mà giữ nguyên giờ **200** |
+
+Các trường hợp overlap được phủ trong pytest: trùng hoàn toàn, nằm trong, bao
+trùm, chồng đầu, chồng cuối, chồng đúng một phút ở hai đầu; và các trường hợp hợp
+lệ: chạm đầu, chạm cuối, tách rời, khác ngày. Ngoài ra có test khẳng định request
+bị 409 không ghi gì vào database và báo cáo *tất cả* lịch bị trùng chứ không chỉ
+lịch đầu tiên.
+
+### Vấn đề còn tồn tại / lưu ý
+
+1. **Race condition về mặt lý thuyết**: kiểm tra xung đột và phần ghi nằm trong
+   cùng một transaction nhưng không khóa bảng, nên hai request gửi đồng thời vẫn
+   có thể tạo ra hai lịch chồng nhau. Với SQLite + một người dùng local thì gần
+   như không xảy ra; nếu cần chắc chắn thì phải dùng ràng buộc ở tầng database
+   hoặc khóa ghi.
+2. **Chưa có tính năng "vẫn tạo dù trùng" (force)** — hiện xung đột là chặn cứng,
+   đúng theo yêu cầu.
+3. **Frontend chưa highlight lịch bị trùng trong danh sách** — thông báo lỗi đã
+   nêu tên và khung giờ; highlight là cải tiến có thể làm sau.
+4. Các mục còn tồn tại của Round 1 (chưa có E2E test cố định trong repo, chưa có
+   Alembic, chưa phân trang/tìm kiếm, chưa xác thực người dùng, chỉ hỗ trợ một
+   múi giờ, port mặc định 8001) vẫn giữ nguyên.

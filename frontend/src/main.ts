@@ -8,7 +8,7 @@ import {
 } from "./api";
 import { toApiValue } from "./format";
 import type { Schedule, ScheduleInput } from "./types";
-import { renderDetail, renderForm, renderList, renderPlaceholder } from "./views";
+import { renderDetail, renderError, renderForm, renderList, renderPlaceholder } from "./views";
 
 type View =
   | { name: "none" }
@@ -20,10 +20,18 @@ interface State {
   schedules: Schedule[];
   view: View;
   loading: boolean;
-  error: string | null;
+  error: ApiError | null;
+  /** Values of a submission the backend rejected, so the form keeps them. */
+  draft: ScheduleInput | null;
 }
 
-const state: State = { schedules: [], view: { name: "none" }, loading: true, error: null };
+const state: State = {
+  schedules: [],
+  view: { name: "none" },
+  loading: true,
+  error: null,
+  draft: null,
+};
 
 const listSlot = document.querySelector<HTMLElement>("#list")!;
 const panelSlot = document.querySelector<HTMLElement>("#panel")!;
@@ -37,11 +45,14 @@ function find(id: number): Schedule | undefined {
 
 function setView(view: View): void {
   state.view = view;
+  state.error = null;
+  state.draft = null;
   render();
 }
 
-function fail(error: unknown): void {
-  state.error = error instanceof ApiError ? error.message : String(error);
+function fail(error: unknown, draft: ScheduleInput | null = null): void {
+  state.error = error instanceof ApiError ? error : new ApiError(String(error), 0);
+  state.draft = draft;
   render();
 }
 
@@ -59,6 +70,7 @@ async function refresh(): Promise<void> {
   try {
     state.schedules = await listSchedules();
     state.error = null;
+    state.draft = null;
   } catch (error) {
     fail(error);
     return;
@@ -75,22 +87,20 @@ async function refresh(): Promise<void> {
 async function submitCreate(input: ScheduleInput): Promise<void> {
   try {
     const created = await createSchedule(toPayload(input));
-    state.error = null;
     state.schedules = await listSchedules();
     setView({ name: "detail", id: created.id });
   } catch (error) {
-    fail(error);
+    fail(error, input);
   }
 }
 
 async function submitEdit(id: number, input: ScheduleInput): Promise<void> {
   try {
     await updateSchedule(id, toPayload(input));
-    state.error = null;
     state.schedules = await listSchedules();
     setView({ name: "detail", id });
   } catch (error) {
-    fail(error);
+    fail(error, input);
   }
 }
 
@@ -98,7 +108,6 @@ async function confirmDelete(schedule: Schedule): Promise<void> {
   if (!window.confirm(`Xóa lịch “${schedule.title}”?`)) return;
   try {
     await deleteSchedule(schedule.id);
-    state.error = null;
     state.schedules = await listSchedules();
     setView({ name: "none" });
   } catch (error) {
@@ -109,18 +118,26 @@ async function confirmDelete(schedule: Schedule): Promise<void> {
 function renderPanel(): HTMLElement {
   switch (state.view.name) {
     case "create":
-      return renderForm(null, {
-        onSubmit: (input) => void submitCreate(input),
-        onCancel: () => setView({ name: "none" }),
-      });
+      return renderForm(
+        null,
+        {
+          onSubmit: (input) => void submitCreate(input),
+          onCancel: () => setView({ name: "none" }),
+        },
+        state.draft,
+      );
     case "edit": {
       const schedule = find(state.view.id);
       if (!schedule) return renderPlaceholder("Lịch không còn tồn tại.");
       const id = schedule.id;
-      return renderForm(schedule, {
-        onSubmit: (input) => void submitEdit(id, input),
-        onCancel: () => setView({ name: "detail", id }),
-      });
+      return renderForm(
+        schedule,
+        {
+          onSubmit: (input) => void submitEdit(id, input),
+          onCancel: () => setView({ name: "detail", id }),
+        },
+        state.draft,
+      );
     }
     case "detail": {
       const schedule = find(state.view.id);
@@ -152,7 +169,7 @@ function render(): void {
 
   countSlot.textContent = `${state.schedules.length} lịch`;
 
-  errorSlot.textContent = state.error ?? "";
+  errorSlot.replaceChildren(...(state.error ? [renderError(state.error)] : []));
   errorSlot.hidden = state.error === null;
 }
 

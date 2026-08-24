@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Schedule } from "./types";
-import { renderDetail, renderForm, renderList } from "./views";
+import { ApiError } from "./api";
+import { renderDetail, renderError, renderForm, renderList } from "./views";
 
 function schedule(overrides: Partial<Schedule> = {}): Schedule {
   return {
@@ -127,5 +128,66 @@ describe("renderForm", () => {
     form.querySelectorAll<HTMLButtonElement>(".actions .btn")[1]!.click();
     expect(onCancel).toHaveBeenCalledOnce();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("renderError", () => {
+  it("shows a plain message when there is no conflict payload", () => {
+    const node = renderError(new ApiError("Không kết nối được backend", 0));
+    expect(node.querySelector(".error__text")?.textContent).toBe("Không kết nối được backend");
+    expect(node.querySelector(".error__list")).toBeNull();
+  });
+
+  it("lists the conflicting schedule with its time range", () => {
+    const node = renderError(new ApiError("overlap", 409, [schedule()]));
+    expect(node.querySelector(".error__text")?.textContent).toContain("trùng với một lịch đã có");
+
+    const items = [...node.querySelectorAll(".error__list li")];
+    expect(items).toHaveLength(1);
+    expect(items[0]!.textContent).toContain("Họp nhóm");
+    expect(items[0]!.textContent).toContain("09:00 – 10:30");
+    expect(node.querySelector(".error__hint")?.textContent).toContain(
+      "bắt đầu đúng lúc lịch khác kết thúc",
+    );
+  });
+
+  it("counts multiple conflicts", () => {
+    const node = renderError(
+      new ApiError("overlap", 409, [
+        schedule({ id: 1 }),
+        schedule({ id: 2, title: "Lịch thứ hai" }),
+      ]),
+    );
+    expect(node.querySelector(".error__text")?.textContent).toContain("2 lịch đã có");
+    expect(node.querySelectorAll(".error__list li")).toHaveLength(2);
+  });
+
+  it("renders conflict titles as text, not markup", () => {
+    const node = renderError(new ApiError("overlap", 409, [schedule({ title: "<b>x</b>" })]));
+    expect(node.querySelector("b")).toBeNull();
+  });
+});
+
+describe("renderForm draft", () => {
+  it("restores a rejected submission instead of the stored values", () => {
+    const draft = {
+      title: "Tiêu đề đang nhập",
+      description: "ghi chú",
+      location: "Phòng B",
+      start_time: "2026-09-05T14:00",
+      end_time: "2026-09-05T15:00",
+    };
+    const form = renderForm(schedule(), { onSubmit: () => {}, onCancel: () => {} }, draft);
+    const inputs = form.querySelectorAll<HTMLInputElement>("input");
+    expect(inputs[0]!.value).toBe("Tiêu đề đang nhập");
+    expect(inputs[1]!.value).toBe("2026-09-05T14:00");
+    expect(inputs[2]!.value).toBe("2026-09-05T15:00");
+    expect(inputs[3]!.value).toBe("Phòng B");
+    expect(form.querySelector("textarea")!.value).toBe("ghi chú");
+  });
+
+  it("falls back to the stored schedule when there is no draft", () => {
+    const form = renderForm(schedule(), { onSubmit: () => {}, onCancel: () => {} }, null);
+    expect(form.querySelectorAll<HTMLInputElement>("input")[0]!.value).toBe("Họp nhóm");
   });
 });

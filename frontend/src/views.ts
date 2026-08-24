@@ -1,6 +1,8 @@
 import { formatDate, formatDuration, formatRange, formatTime, nowInputValue, toInputValue } from "./format";
 import type { Schedule, ScheduleInput } from "./types";
 
+import type { ApiError } from "./api";
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string,
@@ -94,10 +96,33 @@ function field(label: string, control: HTMLElement, hint?: string): HTMLElement 
   return wrapper;
 }
 
+/** Values the form starts with: a rejected draft wins over the stored schedule. */
+function initialValues(schedule: Schedule | null, draft: ScheduleInput | null): ScheduleInput {
+  if (draft) return draft;
+  if (schedule) {
+    return {
+      title: schedule.title,
+      description: schedule.description,
+      location: schedule.location,
+      start_time: toInputValue(schedule.start_time),
+      end_time: toInputValue(schedule.end_time),
+    };
+  }
+  return {
+    title: "",
+    description: null,
+    location: null,
+    start_time: nowInputValue(60),
+    end_time: nowInputValue(120),
+  };
+}
+
 export function renderForm(
   schedule: Schedule | null,
   handlers: { onSubmit: (input: ScheduleInput) => void; onCancel: () => void },
+  draft: ScheduleInput | null = null,
 ): HTMLElement {
+  const values = initialValues(schedule, draft);
   const form = el("form", "panel form");
   form.append(el("h2", undefined, schedule ? "Chỉnh sửa lịch" : "Tạo lịch mới"));
 
@@ -105,29 +130,29 @@ export function renderForm(
   title.type = "text";
   title.required = true;
   title.maxLength = 200;
-  title.value = schedule?.title ?? "";
+  title.value = values.title;
   title.placeholder = "Ví dụ: Họp nhóm dự án";
 
   const start = el("input");
   start.type = "datetime-local";
   start.required = true;
-  start.value = schedule ? toInputValue(schedule.start_time) : nowInputValue(60);
+  start.value = values.start_time;
 
   const end = el("input");
   end.type = "datetime-local";
   end.required = true;
-  end.value = schedule ? toInputValue(schedule.end_time) : nowInputValue(120);
+  end.value = values.end_time;
 
   const location = el("input");
   location.type = "text";
   location.maxLength = 200;
-  location.value = schedule?.location ?? "";
+  location.value = values.location ?? "";
   location.placeholder = "Ví dụ: Phòng A1 / Google Meet";
 
   const description = el("textarea");
   description.rows = 4;
   description.maxLength = 5000;
-  description.value = schedule?.description ?? "";
+  description.value = values.description ?? "";
   description.placeholder = "Ghi chú thêm (không bắt buộc)";
 
   form.append(
@@ -165,4 +190,40 @@ export function renderPlaceholder(text: string): HTMLElement {
   const panel = el("article", "panel panel--placeholder");
   panel.append(el("p", "empty", text));
   return panel;
+}
+
+
+export function renderError(error: ApiError): HTMLElement {
+  const box = el("div", "error__body");
+
+  if (error.conflicts.length === 0) {
+    box.append(el("p", "error__text", error.message));
+    return box;
+  }
+
+  box.append(
+    el(
+      "p",
+      "error__text",
+      error.conflicts.length === 1
+        ? "Khung giờ này bị trùng với một lịch đã có:"
+        : `Khung giờ này bị trùng với ${error.conflicts.length} lịch đã có:`,
+    ),
+  );
+
+  const list = el("ul", "error__list");
+  for (const conflict of error.conflicts) {
+    list.append(
+      el("li", undefined, `${conflict.title} — ${formatRange(conflict.start_time, conflict.end_time)}`),
+    );
+  }
+  box.append(list);
+  box.append(
+    el(
+      "p",
+      "error__hint",
+      "Hãy chọn khung giờ khác. Lịch bắt đầu đúng lúc lịch khác kết thúc thì vẫn hợp lệ.",
+    ),
+  );
+  return box;
 }
