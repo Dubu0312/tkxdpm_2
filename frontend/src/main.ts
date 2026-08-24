@@ -132,11 +132,13 @@ async function refresh(): Promise<void> {
     // The draft belongs to the form, not to this load: a refresh finishing in
     // the background must not discard what the user is in the middle of typing.
   } catch (error) {
+    // Clear the loading flag before rendering the failure: fail() re-renders,
+    // and a list still marked as loading stays stuck on "Đang tải…" for good.
+    state.loading = false;
     fail(error);
     return;
-  } finally {
-    state.loading = false;
   }
+  state.loading = false;
   // Drop a selection that no longer exists (e.g. removed in another tab).
   if ((state.view.name === "detail" || state.view.name === "edit") && !find(state.view.id)) {
     state.view = { name: "none" };

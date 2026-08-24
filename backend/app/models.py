@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import CheckConstraint, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db import Base
 
@@ -77,3 +78,19 @@ class Schedule(Base):
         if self.google_event_id is None or self.google_synced_at is None:
             return False
         return self.updated_at > self.google_synced_at
+
+
+def preserve_updated_at(schedule: Schedule) -> None:
+    """Keep ``updated_at`` across a write that is not a change to the schedule.
+
+    ``updated_at`` means "the content changed". Writing bookkeeping columns —
+    marking a reminder delivered, storing a Google link — would otherwise trip
+    the column's ``onupdate`` and make the schedule look edited, which in turn
+    makes an already-synced schedule report itself out of date.
+
+    Re-assigning the same value is not a change as far as SQLAlchemy is
+    concerned, so the attribute is flagged dirty to force the old value into the
+    UPDATE instead of letting ``onupdate`` fill it in.
+    """
+    schedule.updated_at = schedule.updated_at
+    flag_modified(schedule, "updated_at")

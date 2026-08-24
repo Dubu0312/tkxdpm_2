@@ -18,7 +18,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Schedule, utcnow
+from app.models import Schedule, preserve_updated_at, utcnow
 
 logger = logging.getLogger("app.notifications")
 
@@ -70,6 +70,8 @@ def dispatch_due(session: Session, now: datetime | None = None) -> list[Schedule
     for schedule in delivered:
         deliver(schedule)
         schedule.notified_at = moment
+        # Delivering a reminder is not an edit to the schedule.
+        preserve_updated_at(schedule)
     if delivered:
         session.commit()
     return delivered

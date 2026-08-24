@@ -1101,3 +1101,126 @@ sync lại rồi xóa lịch thì xóa được (204).
    Chấp nhận được với ứng dụng local; nếu cần chắc chắn thì thêm một mã cài đặt
    ngẫu nhiên vào tiền tố.
 7. Các mục tồn đọng từ Round 1–7 vẫn giữ nguyên.
+
+---
+
+## Round 9 — Review and stabilize
+
+**Ngày:** 2026-08-25
+**Commit:** `round 09: review and stabilize scheduling application`
+
+### Yêu cầu
+
+Review toàn bộ ứng dụng như một sản phẩm hoàn chỉnh: tìm bug, regression, logic
+không nhất quán giữa các tính năng, lỗi tích hợp frontend/backend, lỗi database,
+lỗi runtime ở các luồng chính. Chỉ sửa những gì thực sự phát hiện được; không
+thêm feature, không đổi scope, không refactor lớn.
+
+### Cách review
+
+Không chỉ đọc code mà **chạy để dò**. Bốn nhóm probe (đều là script tạm, đã xóa
+sau khi dùng):
+
+1. **So sánh schema** giữa database do `create_all` tạo và database đi qua
+   `migrate.py` từng bước — cột, kiểu, index, CHECK constraint.
+2. **Probe biên và liên tính năng** trên API thật: thời lượng ở mức giây, xung
+   đột ở mức giây, PUT bị từ chối có ghi một phần không, country lạ, tiêu đề
+   quá dài, timezone không hợp lệ.
+3. **Đối chiếu contract** giữa `frontend/src/types.ts` và `openapi.json`.
+4. **Probe luồng hỏng ở frontend** trong jsdom: backend chết lúc khởi động,
+   server trả 500, server trả body không phải JSON.
+
+### Lỗi phát hiện và đã sửa
+
+**1. Database migrate thiếu index (`ix_schedules_start_time`)**
+`ALTER TABLE` chỉ thêm cột, nên database nâng cấp dần qua các round **không bao
+giờ** có index trên `start_time` — đúng cột mà mọi truy vấn kiểm tra xung đột và
+sắp xếp danh sách dựa vào. Hai cách dựng schema cho ra hai kết quả khác nhau.
+→ `migrate.py` thêm bước tạo index còn thiếu (`CREATE INDEX IF NOT EXISTS`), và
+có test so sánh **cột + index** giữa hai đường dựng schema.
+
+**2. Giới hạn thời lượng so sánh trên số phút đã làm tròn**
+`round(seconds/60)` khiến lịch **14 phút 31 giây** làm tròn thành 15 và lọt qua
+mức tối thiểu 15 phút; tương tự **7 ngày + 30 giây** lọt qua mức tối đa. Rule
+được quảng cáo là 15 phút nhưng thực tế là 14,5 phút.
+→ So sánh trực tiếp trên `timedelta`. Con số báo về được làm tròn **xuống** khi
+quá ngắn và **lên** khi quá dài, nên thông báo không bao giờ tự mâu thuẫn kiểu
+"15 minutes, below the minimum of 15".
+
+**3. Gửi notification làm lịch đã sync bị báo nhầm "cần đồng bộ lại"**
+Đánh dấu `notified_at` cũng kích hoạt `onupdate` của `updated_at`, mà
+`google_out_of_date` lại suy ra từ `updated_at > google_synced_at`. Kết quả:
+cứ mỗi lần nhắc được gửi, lịch đã đồng bộ lại hiện "cần đồng bộ lại" dù không ai
+sửa gì. Đúng loại lỗi đã sửa ở Round 8 nhưng đi qua đường khác.
+→ Tách thành helper dùng chung `preserve_updated_at()` trong `models.py`, dùng cả
+ở `notifications.dispatch_due()` lẫn `_save_google_link()`. Ghi cột bookkeeping
+không phải là sửa nội dung lịch.
+
+**4. Backend chết lúc khởi động thì danh sách kẹt ở "Đang tải…" vĩnh viễn**
+Trong `refresh()`, `fail()` render lại **trước khi** `finally` kịp tắt cờ
+`loading`, nên danh sách đứng nguyên ở placeholder trong khi banner lỗi hiện ở
+trên. Người dùng thấy hai thông điệp mâu thuẫn và không có cách nào thoát ngoài
+tải lại trang.
+→ Tắt cờ `loading` trước khi render lỗi.
+
+**5. Phản hồi 200 nhưng không phải JSON làm lộ lỗi parser thô**
+Nếu `VITE_API_BASE_URL` trỏ nhầm (ví dụ vào chính dev server của Vite) thì client
+nhận HTML kèm 200 và người dùng thấy `SyntaxError: Unexpected token '<'`.
+→ Bọc bước parse ở nhánh thành công, báo đúng nguyên nhân và nhắc kiểm tra
+`VITE_API_BASE_URL`.
+
+**Cách kiểm chứng:** cả 5 lỗi đều có test hồi quy, và tôi đã **tạm gỡ phần sửa
+rồi chạy lại** để chắc chắn test thật sự bắt được lỗi: 8/16 test backend mới và
+2/5 test frontend mới fail trên code chưa sửa, tất cả pass sau khi sửa.
+
+### Những chỗ đã kiểm tra và **không** có vấn đề
+
+Ghi lại để lần sau không phải dò lại:
+
+* Cột và kiểu dữ liệu giữa `create_all` và `migrate.py` khớp nhau; CHECK
+  constraint `end_time > start_time` có ở cả hai; chạy migrate lần hai là no-op.
+* Contract frontend/backend: mọi field trong `types.ts` đều tồn tại trong
+  `openapi.json` và ngược lại, không thừa không thiếu; 11 route đều đúng.
+* PUT bị từ chối (thời lượng, ngày nghỉ, trùng lịch) **không** ghi một phần vào
+  database và **không** đẩy gì lên Google.
+* Xóa lịch dọn sạch cả nhắc lẫn event Google.
+* Sync hai lần không tạo event thứ hai; sync được cả lịch trong quá khứ.
+* Lịch đã gửi nhắc rồi bị dời thì được nạp lại để nhắc cho mốc mới.
+* Xung đột ở mức giây (chồng đúng 1 giây) vẫn bị bắt.
+* `country` chấp nhận chữ thường, tiêu đề 200 ký tự unicode qua được, 201 ký tự
+  bị chặn, timezone rỗng hoặc dạng offset thuần bị chặn.
+* Không có unhandled promise rejection nào trong các luồng hỏng ở frontend; form
+  vẫn giữ dữ liệu khi server trả 500.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **222 passed** (206 cũ + 16 test hồi quy) |
+| Frontend test | `npm test` | **118 passed** (113 cũ + 5 test hồi quy) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| Kiểm chứng test bắt được lỗi | tạm gỡ fix rồi chạy lại | 8 backend + 2 frontend test fail đúng như mong đợi |
+| Migration trên database thật | `migrate.py` | tạo nốt index còn thiếu, chạy lần hai no-op |
+| **Smoke end-to-end 9 bước** | server thật, `memory` + poller 2s | CRUD/timezone, trùng chéo múi giờ **409**, 14m31s **422** với số liệu đúng, Tết **409**, qua nửa đêm **201**, sync hai lần cùng một event, poller gửi nhắc mà `out_of_date` **vẫn false**, xóa **204**, database sạch |
+
+### Vấn đề còn tồn tại
+
+Những điều dưới đây đã biết và **có chủ ý không sửa trong round này**, vì sửa
+chúng là thêm feature hoặc đổi kiến trúc:
+
+1. **Khi backend không kết nối được lúc khởi động**, form vẫn mở được nhưng danh
+   sách quốc gia rỗng và không có gợi ý giới hạn thời lượng; không có nút thử
+   lại, phải tải lại trang. Đã hết kẹt ở "Đang tải…" nhưng trải nghiệm vẫn nghèo.
+2. **Kiểm tra thời lượng sớm ở frontend vẫn so theo giờ treo tường**, nên quanh
+   mốc DST có thể lệch với backend (đã ghi từ Round 7). Backend vẫn là bên quyết
+   định — và giờ đã chính xác tới từng giây.
+3. **Race condition lý thuyết** khi kiểm tra trùng lịch (Round 2) vẫn còn: kiểm
+   tra và ghi không nằm trong một khóa.
+4. **Poller nhắc nằm trong tiến trình app**, chạy nhiều worker sẽ gửi trùng.
+5. **Nhánh Google thật vẫn chưa được chạy với credential thật**; chỉ nhánh
+   `memory` được phủ test.
+6. **Không có phân trang** cho `GET /api/schedules`, và `notifications.pending()`
+   lọc trong Python — cùng một giới hạn về quy mô dữ liệu.
+7. **Cảnh báo deprecation** của Starlette TestClient (`httpx` → `httpx2`) vẫn còn.
+8. Danh sách chọn múi giờ (~420 mục) và quốc gia (250 mục) vẫn chưa có tìm kiếm.

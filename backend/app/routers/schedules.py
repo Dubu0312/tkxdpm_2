@@ -6,18 +6,18 @@ back into each schedule's own timezone by ``ScheduleRead.from_model``.
 """
 
 import logging
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
 from app import google_calendar, holiday_calendar, notifications
 from app.config import settings
 from app.db import get_session
-from app.models import Schedule
+from app.models import Schedule, preserve_updated_at
 from app.schemas import (
     ConflictDetail,
     DurationDetail,
@@ -118,12 +118,18 @@ def _reject_bad_duration(payload: ScheduleInput) -> None:
     The limits themselves live in ``settings`` and are served to the frontend by
     ``GET /api/config`` — they are not written down anywhere else.
     """
-    minutes = round((payload.end_time - payload.start_time).total_seconds() / 60)
+    length = payload.end_time - payload.start_time
     low, high = settings.min_duration_minutes, settings.max_duration_minutes
-    if low <= minutes <= high:
+    if timedelta(minutes=low) <= length <= timedelta(minutes=high):
         return
 
-    bound = f"below the minimum of {low}" if minutes < low else f"above the maximum of {high}"
+    # Compare the exact interval, not a rounded number of minutes: 14m31s would
+    # otherwise round up to 15 and slip past a 15 minute minimum. The reported
+    # figure is rounded away from the bound it broke so the message stays true.
+    exact = length.total_seconds() / 60
+    too_short = length < timedelta(minutes=low)
+    minutes = math.floor(exact) if too_short else math.ceil(exact)
+    bound = f"below the minimum of {low}" if too_short else f"above the maximum of {high}"
     detail = DurationDetail(
         message=f"Schedule lasts {minutes} minutes, {bound}",
         duration_minutes=minutes,
@@ -238,23 +244,11 @@ def _save_google_link(
     event_id: str | None,
     synced_at: datetime | None,
 ) -> None:
-    """Store the link without counting the sync as a change to the schedule.
-
-    ``updated_at`` means "the schedule's content changed". Letting the sync bump
-    it would make every freshly synced schedule look out of date against its own
-    push, so the previous value is written back.
-    """
-    unchanged = schedule.updated_at
+    """Store the link without counting the sync as a change to the schedule."""
     schedule.google_event_id = event_id
     schedule.google_calendar_id = settings.google_calendar_id if event_id else None
     schedule.google_synced_at = synced_at
-
-    # Re-assigning the same value is not a change as far as SQLAlchemy is
-    # concerned, so the column would fall back to its onupdate default. Marking
-    # it dirty puts the old value in the UPDATE and keeps the timestamp still.
-    schedule.updated_at = unchanged
-    flag_modified(schedule, "updated_at")
-
+    preserve_updated_at(schedule)
     session.commit()
     session.refresh(schedule)
 

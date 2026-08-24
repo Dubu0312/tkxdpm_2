@@ -141,7 +141,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+
+  try {
+    return (await response.json()) as T;
+  } catch {
+    // A 200 that is not JSON usually means the requests are reaching something
+    // other than the API. Say that, rather than leaking a parser error.
+    throw new ApiError(
+      `Phản hồi từ ${API_BASE_URL} không phải JSON — kiểm tra lại VITE_API_BASE_URL`,
+      response.status,
+    );
+  }
 }
 
 export const fetchHealth = (): Promise<HealthResponse> => request<HealthResponse>("/health");

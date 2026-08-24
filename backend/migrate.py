@@ -92,6 +92,19 @@ def _add_google_columns() -> None:
     print("Added the Google Calendar columns (existing schedules are unlinked).")
 
 
+def _create_missing_indexes() -> None:
+    """Add indexes a migrated database would otherwise never get.
+
+    ``ALTER TABLE`` only adds columns, so a database upgraded step by step ended
+    up without the index ``create_all`` puts on ``start_time`` — the column every
+    conflict check and the listing order rely on.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_schedules_start_time ON schedules (start_time)")
+        )
+
+
 def migrate(timezone_name: str) -> int:
     """Apply every pending upgrade. Returns the number of rows converted to UTC."""
     columns = _columns()
@@ -114,9 +127,20 @@ def migrate(timezone_name: str) -> int:
         _add_google_columns()
         applied = True
 
+    indexes_before = _index_names()
+    _create_missing_indexes()
+    if _index_names() != indexes_before:
+        print("Created the missing index on schedules.start_time.")
+        applied = True
+
     if not applied:
         print("Database is already up to date; nothing to do.")
     return converted
+
+
+def _index_names() -> set[str]:
+    inspector = inspect(engine)
+    return {index["name"] for index in inspector.get_indexes("schedules")}
 
 
 def main() -> None:
