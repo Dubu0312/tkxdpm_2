@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, createSchedule, deleteSchedule, listCountries, listSchedules } from "./api";
+import {
+  ApiError,
+  createSchedule,
+  deleteSchedule,
+  fetchLimits,
+  listCountries,
+  listSchedules,
+} from "./api";
 
 const INPUT = {
   title: "Họp",
@@ -112,6 +119,42 @@ describe("api client", () => {
       country: "VN",
       holidays: [{ date: "2026-02-17", name: "Lunar New Year" }],
     });
+  });
+
+  it("keeps the limits from a 422 duration response", async () => {
+    const body = {
+      detail: {
+        code: "duration_out_of_range",
+        message: "Schedule lasts 5 minutes, below the minimum of 15",
+        duration_minutes: 5,
+        min_minutes: 15,
+        max_minutes: 10080,
+      },
+    };
+    mockFetch(new Response(JSON.stringify(body), { status: 422 }));
+
+    const error = (await createSchedule(INPUT).catch((err: unknown) => err)) as ApiError;
+    expect(error.status).toBe(422);
+    expect(error.detail).toEqual({
+      kind: "duration",
+      durationMinutes: 5,
+      minMinutes: 15,
+      maxMinutes: 10080,
+    });
+  });
+
+  it("still flattens an ordinary 422 validation body", async () => {
+    const body = { detail: [{ loc: ["body", "end_time"], msg: "end_time must be after start_time" }] };
+    mockFetch(new Response(JSON.stringify(body), { status: 422 }));
+    const error = (await createSchedule(INPUT).catch((err: unknown) => err)) as ApiError;
+    expect(error.detail).toBeNull();
+    expect(error.message).toContain("end_time must be after start_time");
+  });
+
+  it("fetches the duration limits", async () => {
+    const limits = { min_duration_minutes: 15, max_duration_minutes: 10080, default_timezone: "UTC" };
+    mockFetch(new Response(JSON.stringify(limits), { status: 200 }));
+    expect(await fetchLimits()).toEqual(limits);
   });
 
   it("leaves the detail empty for other errors", async () => {

@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import notifications
 from app.config import settings
 from app.db import SessionLocal, check_connection, init_db
+from app.routers import config as config_router
 from app.routers import countries, schedules
 from app.routers import notifications as notifications_router
 
@@ -72,6 +73,7 @@ app.add_middleware(
 
 app.include_router(schedules.router)
 app.include_router(countries.router)
+app.include_router(config_router.router)
 app.include_router(notifications_router.router)
 
 

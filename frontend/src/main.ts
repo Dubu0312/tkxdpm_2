@@ -3,12 +3,13 @@ import {
   ApiError,
   createSchedule,
   deleteSchedule,
+  fetchLimits,
   listCountries,
   listSchedules,
   updateSchedule,
 } from "./api";
-import { browserTimezone, toApiValue } from "./format";
-import type { Country, Schedule, ScheduleInput } from "./types";
+import { browserTimezone, toApiValue, wallClockDeltaMinutes } from "./format";
+import type { Country, Limits, Schedule, ScheduleInput } from "./types";
 import {
   renderDetail,
   renderError,
@@ -35,6 +36,8 @@ interface State {
   viewTimezone: string;
   /** Countries the backend can check holidays for; loaded once at startup. */
   countries: Country[];
+  /** Duration limits served by the backend; null until they are loaded. */
+  limits: Limits | null;
 }
 
 const state: State = {
@@ -45,6 +48,7 @@ const state: State = {
   draft: null,
   viewTimezone: browserTimezone(),
   countries: [],
+  limits: null,
 };
 
 const listSlot = document.querySelector<HTMLElement>("#list")!;
@@ -71,6 +75,30 @@ function fail(error: unknown, draft: ScheduleInput | null = null): void {
   render();
 }
 
+/**
+ * Catch an obviously bad length before making a round trip.
+ *
+ * This compares the wall-clock values, which equals the real duration except
+ * across a DST change in the chosen timezone. The backend measures between the
+ * instants and stays the authority — this only saves a request.
+ */
+function checkDuration(input: ScheduleInput): ApiError | null {
+  const limits = state.limits;
+  if (limits === null) return null;
+
+  const minutes = wallClockDeltaMinutes(input.start_time, input.end_time);
+  if (minutes <= 0) return null; // "end must be after start" is the backend's message
+  if (minutes >= limits.min_duration_minutes && minutes <= limits.max_duration_minutes) {
+    return null;
+  }
+  return new ApiError(`Schedule lasts ${minutes} minutes`, 422, {
+    kind: "duration",
+    durationMinutes: minutes,
+    minMinutes: limits.min_duration_minutes,
+    maxMinutes: limits.max_duration_minutes,
+  });
+}
+
 function toPayload(input: ScheduleInput): ScheduleInput {
   return {
     ...input,
@@ -83,13 +111,17 @@ async function refresh(): Promise<void> {
   state.loading = true;
   render();
   try {
-    // The country list never changes while the page is open, so load it once.
+    // Neither the country list nor the limits change while the page is open.
     if (state.countries.length === 0) {
       state.countries = await listCountries();
     }
+    if (state.limits === null) {
+      state.limits = await fetchLimits();
+    }
     state.schedules = await listSchedules();
     state.error = null;
-    state.draft = null;
+    // The draft belongs to the form, not to this load: a refresh finishing in
+    // the background must not discard what the user is in the middle of typing.
   } catch (error) {
     fail(error);
     return;
@@ -104,6 +136,9 @@ async function refresh(): Promise<void> {
 }
 
 async function submitCreate(input: ScheduleInput): Promise<void> {
+  const tooLongOrShort = checkDuration(input);
+  if (tooLongOrShort) return fail(tooLongOrShort, input);
+
   try {
     const created = await createSchedule(toPayload(input));
     state.schedules = await listSchedules();
@@ -114,6 +149,9 @@ async function submitCreate(input: ScheduleInput): Promise<void> {
 }
 
 async function submitEdit(id: number, input: ScheduleInput): Promise<void> {
+  const tooLongOrShort = checkDuration(input);
+  if (tooLongOrShort) return fail(tooLongOrShort, input);
+
   try {
     await updateSchedule(id, toPayload(input));
     state.schedules = await listSchedules();
@@ -146,6 +184,7 @@ function renderPanel(): HTMLElement {
         state.draft,
         state.viewTimezone,
         state.countries,
+        state.limits,
       );
     case "edit": {
       const schedule = find(state.view.id);
@@ -160,6 +199,7 @@ function renderPanel(): HTMLElement {
         state.draft,
         state.viewTimezone,
         state.countries,
+        state.limits,
       );
     }
     case "detail": {

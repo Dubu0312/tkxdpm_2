@@ -637,3 +637,52 @@ describe("reminders", () => {
     expect(summary).toContain("23:45");
   });
 });
+
+describe("duration limits", () => {
+  const LIMITS = {
+    min_duration_minutes: 15,
+    max_duration_minutes: 10080,
+    default_timezone: SAIGON,
+  };
+
+  const durationError = (minutes: number) =>
+    new ApiError("too short or long", 422, {
+      kind: "duration",
+      durationMinutes: minutes,
+      minMinutes: 15,
+      maxMinutes: 10080,
+    });
+
+  it("says a schedule is too short and names the allowed range", () => {
+    const node = renderError(durationError(5), SAIGON, COUNTRIES);
+    expect(node.querySelector(".error__text")?.textContent).toBe("Lịch quá ngắn: 5 phút.");
+    expect(node.querySelector(".error__hint")?.textContent).toBe(
+      "Thời lượng phải từ 15 phút đến 7 ngày.",
+    );
+  });
+
+  it("says a schedule is too long", () => {
+    const node = renderError(durationError(20160), SAIGON, COUNTRIES);
+    expect(node.querySelector(".error__text")?.textContent).toBe("Lịch quá dài: 14 ngày.");
+  });
+
+  it("shows the limits in the form before anything is submitted", () => {
+    const form = renderForm(
+      null,
+      { onSubmit: () => {}, onCancel: () => {} },
+      null,
+      SAIGON,
+      [],
+      LIMITS,
+    );
+    const hints = [...form.querySelectorAll(".field__hint")].map((n) => n.textContent);
+    expect(hints.some((h) => h?.includes("Thời lượng từ 15 phút đến 7 ngày"))).toBe(true);
+  });
+
+  it("falls back to the plain hint when the limits are not loaded yet", () => {
+    const form = renderForm(null, { onSubmit: () => {}, onCancel: () => {} }, null, SAIGON, []);
+    const hints = [...form.querySelectorAll(".field__hint")].map((n) => n.textContent);
+    expect(hints.some((h) => h?.includes("Thời lượng từ"))).toBe(false);
+    expect(hints.some((h) => h?.includes("ngày hôm sau"))).toBe(true);
+  });
+});

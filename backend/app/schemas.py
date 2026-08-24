@@ -240,3 +240,21 @@ class NotificationRead(BaseModel):
                 None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
             ),
         )
+
+
+class DurationDetail(BaseModel):
+    """Body of a 422 response: the schedule is too short or too long."""
+
+    code: Literal["duration_out_of_range"] = "duration_out_of_range"
+    message: str
+    duration_minutes: int
+    min_minutes: int
+    max_minutes: int
+
+
+class LimitsRead(BaseModel):
+    """Rules the frontend needs to know about, served rather than hard-coded."""
+
+    min_duration_minutes: int
+    max_duration_minutes: int
+    default_timezone: str

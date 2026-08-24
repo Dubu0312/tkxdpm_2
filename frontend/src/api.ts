@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "./env";
-import type { Country, HolidayHit, Schedule, ScheduleInput } from "./types";
+import type { Country, HolidayHit, Limits, Schedule, ScheduleInput } from "./types";
 
 export interface HealthResponse {
   status: string;
@@ -10,7 +10,8 @@ export interface HealthResponse {
 /** Why the backend refused a schedule, when it said so in a structured way. */
 export type RefusalDetail =
   | { kind: "conflict"; conflicts: Schedule[] }
-  | { kind: "holiday"; country: string; holidays: HolidayHit[] };
+  | { kind: "holiday"; country: string; holidays: HolidayHit[] }
+  | { kind: "duration"; durationMinutes: number; minMinutes: number; maxMinutes: number };
 
 /** Error carrying the message the backend sent back. */
 export class ApiError extends Error {
@@ -44,6 +45,14 @@ interface HolidayBody {
   holidays: HolidayHit[];
 }
 
+interface DurationBody {
+  code: "duration_out_of_range";
+  message: string;
+  duration_minutes: number;
+  min_minutes: number;
+  max_minutes: number;
+}
+
 function hasCode(detail: unknown, code: string): boolean {
   return (
     typeof detail === "object" && detail !== null && (detail as { code?: unknown }).code === code
@@ -58,6 +67,13 @@ function isHolidayBody(detail: unknown): detail is HolidayBody {
   return hasCode(detail, "holiday_conflict") && Array.isArray((detail as HolidayBody).holidays);
 }
 
+function isDurationBody(detail: unknown): detail is DurationBody {
+  return (
+    hasCode(detail, "duration_out_of_range") &&
+    typeof (detail as DurationBody).duration_minutes === "number"
+  );
+}
+
 /** Turns a FastAPI error body into an ApiError, keeping any conflict payload. */
 function errorFromBody(body: unknown, status: number, fallback: string): ApiError {
   const detail =
@@ -69,6 +85,14 @@ function errorFromBody(body: unknown, status: number, fallback: string): ApiErro
     return new ApiError(detail.message, status, {
       kind: "conflict",
       conflicts: detail.conflicts,
+    });
+  }
+  if (isDurationBody(detail)) {
+    return new ApiError(detail.message, status, {
+      kind: "duration",
+      durationMinutes: detail.duration_minutes,
+      minMinutes: detail.min_minutes,
+      maxMinutes: detail.max_minutes,
     });
   }
   if (isHolidayBody(detail)) {
@@ -130,3 +154,5 @@ export const deleteSchedule = (id: number): Promise<void> =>
   request<void>(`/api/schedules/${id}`, { method: "DELETE" });
 
 export const listCountries = (): Promise<Country[]> => request<Country[]>("/api/countries");
+
+export const fetchLimits = (): Promise<Limits> => request<Limits>("/api/config");

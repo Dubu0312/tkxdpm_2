@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     notifications_enabled: bool = True
     notification_poll_seconds: int = 30
 
+    # How long a schedule is allowed to be, in minutes. These are the single
+    # source of truth for the rule: the API enforces them and serves them to the
+    # frontend, so no length is written down anywhere else.
+    min_duration_minutes: int = 15
+    max_duration_minutes: int = 7 * 24 * 60  # one week
+
     @field_validator("database_url")
     @classmethod
     def _absolutise_sqlite_path(cls, value: str) -> str:
@@ -47,6 +53,14 @@ class Settings(BaseSettings):
         if raw in ("", ":memory:") or raw.startswith("/"):
             return value
         return prefix + str((PROJECT_ROOT / raw).resolve())
+
+    @model_validator(mode="after")
+    def _sane_duration_limits(self):
+        if self.min_duration_minutes < 1:
+            raise ValueError("min_duration_minutes must be at least 1")
+        if self.max_duration_minutes < self.min_duration_minutes:
+            raise ValueError("max_duration_minutes must not be below min_duration_minutes")
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

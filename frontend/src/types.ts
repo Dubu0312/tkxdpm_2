@@ -45,3 +45,10 @@ export interface HolidayHit {
   date: string;
   name: string;
 }
+
+/** Rules served by the backend so the frontend does not hard-code them. */
+export interface Limits {
+  min_duration_minutes: number;
+  max_duration_minutes: number;
+  default_timezone: string;
+}

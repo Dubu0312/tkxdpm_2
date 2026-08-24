@@ -13,10 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import holiday_calendar, notifications
+from app.config import settings
 from app.db import get_session
 from app.models import Schedule
 from app.schemas import (
     ConflictDetail,
+    DurationDetail,
     HolidayDetail,
     HolidayHit,
     ScheduleCreate,
@@ -29,6 +31,13 @@ router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
+
+DURATION_RESPONSE = {
+    status.HTTP_422_UNPROCESSABLE_CONTENT: {
+        "model": DurationDetail,
+        "description": "The schedule is shorter or longer than the configured limits",
+    }
+}
 
 CONFLICT_RESPONSE = {
     status.HTTP_409_CONFLICT: {
@@ -95,6 +104,34 @@ def _reject_conflicts(
     )
 
 
+def _reject_bad_duration(payload: ScheduleInput) -> None:
+    """Raise 422 if the schedule is shorter or longer than the configured limits.
+
+    The length is measured between the two instants, so it is the real elapsed
+    time: unaffected by the timezone the schedule was entered in, by running
+    past midnight, and correct across a DST change where the wall clock lies.
+
+    The limits themselves live in ``settings`` and are served to the frontend by
+    ``GET /api/config`` — they are not written down anywhere else.
+    """
+    minutes = round((payload.end_time - payload.start_time).total_seconds() / 60)
+    low, high = settings.min_duration_minutes, settings.max_duration_minutes
+    if low <= minutes <= high:
+        return
+
+    bound = f"below the minimum of {low}" if minutes < low else f"above the maximum of {high}"
+    detail = DurationDetail(
+        message=f"Schedule lasts {minutes} minutes, {bound}",
+        duration_minutes=minutes,
+        min_minutes=low,
+        max_minutes=high,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=detail.model_dump(mode="json"),
+    )
+
+
 def _reject_holidays(payload: ScheduleInput) -> None:
     """Raise 409 if the schedule falls on a public holiday of its country.
 
@@ -132,9 +169,10 @@ def list_schedules(session: SessionDep) -> list[ScheduleRead]:
     "",
     response_model=ScheduleRead,
     status_code=status.HTTP_201_CREATED,
-    responses=CONFLICT_RESPONSE,
+    responses={**CONFLICT_RESPONSE, **DURATION_RESPONSE},
 )
 def create_schedule(payload: ScheduleCreate, session: SessionDep) -> ScheduleRead:
+    _reject_bad_duration(payload)
     _reject_holidays(payload)
     _reject_conflicts(session, payload.start_time, payload.end_time)
     schedule = Schedule(**payload.to_columns())
@@ -149,13 +187,18 @@ def get_schedule(schedule_id: int, session: SessionDep) -> ScheduleRead:
     return ScheduleRead.from_model(_get_or_404(session, schedule_id))
 
 
-@router.put("/{schedule_id}", response_model=ScheduleRead, responses=CONFLICT_RESPONSE)
+@router.put(
+    "/{schedule_id}",
+    response_model=ScheduleRead,
+    responses={**CONFLICT_RESPONSE, **DURATION_RESPONSE},
+)
 def update_schedule(
     schedule_id: int,
     payload: ScheduleUpdate,
     session: SessionDep,
 ) -> ScheduleRead:
     schedule = _get_or_404(session, schedule_id)
+    _reject_bad_duration(payload)
     _reject_holidays(payload)
     _reject_conflicts(session, payload.start_time, payload.end_time, exclude_id=schedule_id)
     # Compare against the stored values before overwriting them.

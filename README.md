@@ -8,7 +8,8 @@ và mô tả (ba trường sau không bắt buộc), kèm mốc `created_at` / `
 Lịch có thể được tạo ở bất kỳ múi giờ nào và xem lại ở múi giờ khác mà không đổi
 thời điểm thực, và có thể kéo dài qua nửa đêm. Backend từ chối lịch bị trùng khung
 giờ với lịch đã có, và từ chối lịch rơi vào ngày nghỉ chính thức của quốc gia được
-chọn. Mỗi lịch có thể đặt một mốc nhắc trước (`reminder_minutes`).
+chọn. Mỗi lịch có thể đặt một mốc nhắc trước (`reminder_minutes`), và phải dài
+trong khoảng cho phép (mặc định 15 phút – 7 ngày).
 
 ## Tech stack
 
@@ -35,6 +36,7 @@ chọn. Mỗi lịch có thể đặt một mốc nhắc trước (`reminder_min
 │   │   ├── routers/
 │   │   │   ├── schedules.py# CRUD endpoints under /api/schedules
 │   │   │   ├── countries.py# GET /api/countries
+│   │   │   ├── config.py   # GET /api/config (rules served to the frontend)
 │   │   │   └── notifications.py # /api/notifications
 │   │   └── main.py         # FastAPI app: GET /, GET /health, router
 │   ├── migrate.py          # one-off upgrade of pre-timezone databases
@@ -150,6 +152,7 @@ Base URL: `http://127.0.0.1:8001`.
 | PUT    | `/api/schedules/{id}`  | Cập nhật toàn bộ một lịch                   |
 | DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
 | GET    | `/api/countries`       | Danh sách quốc gia kiểm tra được ngày nghỉ  |
+| GET    | `/api/config`          | Giới hạn thời lượng + múi giờ mặc định      |
 | GET    | `/api/notifications`   | Nhắc đang chờ (chưa gửi, lịch chưa bắt đầu) |
 | GET    | `/api/notifications/due` | Nhắc đã đến lúc gửi nhưng chưa gửi        |
 | POST   | `/api/notifications/dispatch` | Gửi ngay các nhắc đang đến hạn      |
@@ -192,6 +195,45 @@ curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/j
   -d '{"title":"Saigon","start_time":"2026-12-15T16:30:00","end_time":"2026-12-15T17:30:00","timezone":"Asia/Saigon"}'
 # -> 409 Conflict
 ```
+
+### Giới hạn thời lượng
+
+Một lịch phải dài trong khoảng cho phép, mặc định **15 phút – 7 ngày**. Hai giá
+trị này nằm ở **một chỗ duy nhất** là `Settings` trong
+[`app/config.py`](backend/app/config.py), đổi được bằng biến môi trường:
+
+```bash
+MIN_DURATION_MINUTES=15
+MAX_DURATION_MINUTES=10080   # 7 ngày
+```
+
+Backend là nơi thực thi rule. Frontend **không hard-code** hai con số này mà đọc
+từ `GET /api/config` để hiện gợi ý trong form và chặn sớm trước khi gửi request —
+nhưng backend vẫn là bên quyết định.
+
+Thời lượng được đo **giữa hai instant**, nên đúng với mọi múi giờ, với lịch qua
+nửa đêm và lịch bắt đầu/kết thúc ở hai ngày khác nhau. Quanh mốc đổi giờ DST thì
+đồng hồ treo tường nói dối còn thời lượng thực thắng: 01:50 → 03:00 ngày
+spring-forward ở New York đọc như 70 phút nhưng chỉ có **10 phút** thực trôi qua,
+nên bị từ chối.
+
+Vượt giới hạn trả `422` kèm body có cấu trúc:
+
+```json
+{
+  "detail": {
+    "code": "duration_out_of_range",
+    "message": "Schedule lasts 14 minutes, below the minimum of 15",
+    "duration_minutes": 14,
+    "min_minutes": 15,
+    "max_minutes": 10080
+  }
+}
+```
+
+Thứ tự kiểm tra: payload hợp lệ (`end` sau `start`) → **thời lượng** → ngày nghỉ
+→ trùng lịch. Thời lượng đứng trước vì nó chỉ phụ thuộc vào chính request, và một
+lịch sai độ dài thì không giờ nào cứu được.
 
 ### Ngày nghỉ theo quốc gia
 

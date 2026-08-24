@@ -54,7 +54,7 @@ def test_an_overnight_schedule_keeps_its_real_duration(client, db):
         ("2026-12-31T23:30:00", "2027-01-01T01:00:00", "qua ranh giới năm"),
         ("2026-02-28T22:00:00", "2026-03-01T06:00:00", "qua cuối tháng 2"),
         ("2026-04-01T09:00:00", "2026-04-03T09:00:00", "kéo dài 48 giờ"),
-        ("2026-05-01T23:59:00", "2026-05-02T00:01:00", "chỉ 2 phút quanh nửa đêm"),
+        ("2026-05-01T23:50:00", "2026-05-02T00:10:00", "khoảng ngắn ôm nửa đêm"),
     ],
 )
 def test_ranges_crossing_a_date_boundary_are_accepted(client, start, end, case):
@@ -100,7 +100,7 @@ def overnight(client):
         ("2026-03-10T23:50:00", "2026-03-11T00:10:00", "nằm trọn bên trong, ôm nửa đêm"),
         ("2026-03-10T20:00:00", "2026-03-11T05:00:00", "bao trùm cả lịch đêm"),
         ("2026-03-10T23:30:00", "2026-03-11T01:00:00", "trùng khít"),
-        ("2026-03-11T00:00:00", "2026-03-11T00:01:00", "đúng thời khắc nửa đêm"),
+        ("2026-03-11T00:00:00", "2026-03-11T00:20:00", "bắt đầu đúng thời khắc nửa đêm"),
     ],
 )
 def test_overlapping_an_overnight_schedule_is_rejected(client, overnight, start, end, case):

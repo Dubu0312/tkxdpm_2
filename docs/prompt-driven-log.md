@@ -823,3 +823,131 @@ hai không gửi gì → xóa lịch thì mốc nhắc biến khỏi danh sách.
 6. **`notified_at` chỉ ghi lúc gửi**, không ghi kết quả gửi (thành công/thất bại)
    vì kênh hiện tại không thể thất bại.
 7. Các mục tồn đọng từ Round 1–5 vẫn giữ nguyên.
+
+---
+
+## Round 7 — Add scheduling duration limits
+
+**Ngày:** 2026-08-25
+**Commit:** `round 07: add scheduling duration limits`
+
+### Yêu cầu
+
+Thêm giới hạn thời lượng tối thiểu và tối đa cho một lịch. Hai giá trị phải nằm ở
+vị trí rõ ràng, dễ thay đổi, không hard-code rải rác. Backend thực thi rule.
+Frontend hỗ trợ validation và hiển thị lỗi rõ khi quá ngắn/quá dài. Thời lượng
+phải tính đúng với timezone, lịch qua nửa đêm và lịch vắt qua hai ngày. Không làm
+hỏng conflict detection hay notification.
+
+### Quyết định
+
+- **Giới hạn nằm trong `Settings`** (`app/config.py`), override bằng
+  `MIN_DURATION_MINUTES` / `MAX_DURATION_MINUTES`. Đây đã là chỗ chứa mọi tham số
+  cấu hình khác của dự án nên không phát sinh cơ chế mới. Có validator bảo đảm
+  `1 <= min < max` để cấu hình sai bị chặn ngay lúc khởi động.
+- **Frontend không lặp lại hai con số**: thêm `GET /api/config` trả về giới hạn
+  (và múi giờ mặc định). Frontend đọc lúc khởi động để hiện gợi ý trong form và
+  chặn sớm trước khi gửi. Backend vẫn là bên quyết định — có test gửi thẳng vào
+  API bỏ qua UI để chứng minh.
+- **Mặc định 15 phút – 7 ngày.** 15 phút là slot họp tối thiểu quen thuộc; 7 ngày
+  giữ được lịch nhiều ngày mà Round 5 đã cố tình hỗ trợ (nếu chọn 24 giờ thì hoá
+  ra đi ngược lại tính năng vừa làm), đồng thời vẫn chặn được lịch dài vô lý.
+- **Trả `422`, không phải `409`.** Độ dài chỉ phụ thuộc vào chính request, không
+  phụ thuộc dữ liệu đang có — đúng nghĩa "well-formed nhưng không xử lý được".
+  `409` vẫn dành cho xung đột với trạng thái hiện có (trùng lịch, ngày nghỉ).
+  Body vẫn có cấu trúc (`code`, `message`, `duration_minutes`, `min_minutes`,
+  `max_minutes`) như hai loại từ chối kia, nên frontend xử lý thống nhất.
+- **Thứ tự kiểm tra: thời lượng → ngày nghỉ → trùng lịch.** Thời lượng đứng trước
+  vì nó chỉ cần chính request, và lịch sai độ dài thì không khung giờ nào cứu được.
+- **Đo giữa hai instant**, tức thời lượng thực. Điều này khiến rule tự đúng với
+  timezone, lịch qua nửa đêm và lịch vắt hai ngày — không cần code riêng cho từng
+  trường hợp. Quanh DST thì đồng hồ treo tường nói dối: 01:50 → 03:00 ngày
+  spring-forward ở New York đọc như 70 phút nhưng chỉ **10 phút** thực trôi qua và
+  bị từ chối.
+
+### Đã sửa ba test cũ — có chủ ý
+
+Bất kỳ giá trị min nào có ý nghĩa cũng làm một số test cũ trở thành không hợp lệ,
+vì chúng dùng dải 1–2 phút để dò biên overlap:
+
+| Test | Trước | Sau | Ý đồ giữ nguyên |
+| --- | --- | --- | --- |
+| `test_conflicts` | 08:59–09:01 | 08:45–09:01 | vẫn chồng đúng 1 phút ở đầu |
+| `test_overnight` | 23:59–00:01 | 23:50–00:10 | vẫn là khoảng ngắn ôm nửa đêm |
+| `test_overnight` | 00:00–00:01 | 00:00–00:20 | vẫn bắt đầu đúng thời khắc nửa đêm |
+
+Đây là thay đổi hành vi có chủ ý, không phải test bị hỏng.
+
+### Một lỗi thật phát hiện khi chạy E2E
+
+Bài E2E lộ ra rằng sau khi lịch bị từ chối, form **mất sạch dữ liệu đã nhập** —
+nhưng chỉ trong một cửa sổ hẹp ngay sau khi trang tải xong. Nguyên nhân:
+`refresh()` khi thành công xoá cả `state.error` **và `state.draft`**; nếu lần tải
+nền kết thúc đúng lúc người dùng vừa bị từ chối thì bản nháp bị xoá theo. Bản
+nháp thuộc về form chứ không thuộc về lần tải, nên đã bỏ dòng xoá `state.draft`
+trong `refresh()` (`setView()` vẫn xoá khi chuyển màn hình).
+
+### Đã thay đổi
+
+**Backend**
+- `app/config.py` — `min_duration_minutes`, `max_duration_minutes` + validator.
+- `app/schemas.py` — `DurationDetail`, `LimitsRead`.
+- `app/routers/schedules.py` — `_reject_bad_duration()` dùng chung cho `POST` và
+  `PUT`, chạy trước hai rule kia; khai báo `422` trong OpenAPI.
+- `app/routers/config.py` (mới) — `GET /api/config`.
+- Đổi `HTTP_422_UNPROCESSABLE_ENTITY` sang `HTTP_422_UNPROCESSABLE_CONTENT` (hằng
+  cũ đã deprecated trong Starlette).
+
+**Frontend**
+- `src/types.ts`, `src/api.ts` — kiểu `Limits`, `fetchLimits()`, thêm nhánh
+  `duration` vào `RefusalDetail`.
+- `src/views.ts` — `renderError()` xử lý lỗi thời lượng; gợi ý dưới ô "Kết thúc"
+  nêu đúng giới hạn backend đang áp dụng.
+- `src/main.ts` — nạp giới hạn lúc khởi động, `checkDuration()` chặn sớm trước
+  khi gửi, và không còn xoá bản nháp trong `refresh()`.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **175 passed** (141 cũ + 34 test thời lượng) |
+| Regression conflict/notification/timezone/overnight/holiday | `pytest` 5 file đó | **125 passed** |
+| Frontend test | `npm test` | **103 passed** (96 cũ + 7 mới) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| **End-to-end thật** | UI thật trong jsdom → backend `:8001` → SQLite | **1 passed** (chi tiết bên dưới) |
+| Kiểm chứng bằng curl | 4 request + `/api/config` | 15 phút → **201**; 14 phút → **422** kèm `duration_out_of_range`; 7 ngày → **201**; 7 ngày 1 phút → **422** |
+
+Bốn trường hợp yêu cầu nêu rõ đều có test riêng:
+
+* **đúng minimum** — `test_exactly_the_minimum_is_accepted` (201);
+* **đúng maximum** — `test_exactly_the_maximum_is_accepted` (201);
+* **dưới minimum** — `test_one_minute_under_the_minimum_is_rejected` cùng
+  parametrize 1 phút / 2 phút / `MIN-1`;
+* **trên maximum** — `test_one_minute_over_the_maximum_is_rejected` cùng
+  parametrize `MAX+1` / `MAX*2` / một năm.
+
+Ngoài ra: không ghi gì khi bị từ chối, thu hẹp/kéo dài quá giới hạn khi sửa lịch,
+`end < start` vẫn là lỗi validation thường chứ không phải lỗi thời lượng, và ba
+test khẳng định conflict / holiday / notification vẫn hoạt động nguyên vẹn.
+
+Nội dung bài E2E: form nêu sẵn "Thời lượng từ 15 phút đến 7 ngày" → gửi lịch 5
+phút thì hiện "Lịch quá ngắn: 5 phút." kèm khoảng cho phép, database vẫn rỗng và
+dữ liệu đã nhập được giữ lại → gửi lịch 19 ngày thì hiện "Lịch quá dài" → lịch
+đúng 15 phút được tạo, panel hiện "15 phút" → lịch đúng 7 ngày được tạo, panel
+hiện "7 ngày" → gọi thẳng API bỏ qua UI với lịch 10 phút vẫn nhận **422** → lịch
+01:50→03:00 đêm DST ở New York bị **422** với `duration_minutes = 10`.
+
+### Vấn đề còn tồn tại / lưu ý
+
+1. **Kiểm tra sớm ở frontend so sánh theo giờ treo tường**, nên quanh mốc DST nó
+   có thể lệch với thời lượng thực: đêm lùi giờ, một lịch 01:55 → 02:00 đọc là 5
+   phút (frontend chặn) nhưng thực tế dài 65 phút và backend sẽ chấp nhận. Backend
+   vẫn là nguồn quyết định; chấp nhận đánh đổi này thay vì đưa phép tính offset
+   vào frontend.
+2. **Giới hạn là toàn cục**, không theo loại lịch hay theo người dùng.
+3. **Đổi giới hạn không ảnh hưởng lịch đã lưu**: lịch cũ nằm ngoài khoảng mới vẫn
+   tồn tại, chỉ không sửa được nếu không đưa độ dài về trong khoảng.
+4. **`GET /api/config` đọc lúc tải trang**; đổi cấu hình khi tab đang mở thì
+   frontend chưa biết cho tới khi tải lại.
+5. Các mục tồn đọng từ Round 1–6 vẫn giữ nguyên.

@@ -15,7 +15,7 @@ import {
   toInputValue,
   wallClockDeltaMinutes,
 } from "./format";
-import type { Country, Schedule, ScheduleInput } from "./types";
+import type { Country, Limits, Schedule, ScheduleInput } from "./types";
 
 import type { ApiError } from "./api";
 
@@ -223,6 +223,16 @@ export function countrySelect(countries: Country[], selected: string | null): HT
   return select;
 }
 
+/** Hint under the end field, naming the limits the backend actually enforces. */
+function endHint(limits: Limits | null): string {
+  const base = "Phải sau thời gian bắt đầu; có thể rơi vào ngày hôm sau.";
+  if (limits === null) return base;
+  return (
+    `${base} Thời lượng từ ${formatMinutes(limits.min_duration_minutes)} ` +
+    `đến ${formatMinutes(limits.max_duration_minutes)}.`
+  );
+}
+
 /** Lead times offered in the form; the value is minutes before the start. */
 const REMINDER_CHOICES = [5, 10, 15, 30, 60, 120, 1440];
 
@@ -288,6 +298,7 @@ export function renderForm(
   draft: ScheduleInput | null = null,
   defaultTimezone: string = "UTC",
   countries: Country[] = [],
+  limits: Limits | null = null,
 ): HTMLElement {
   const values = initialValues(schedule, draft, defaultTimezone);
   const form = el("form", "panel form");
@@ -330,7 +341,7 @@ export function renderForm(
     field("Tiêu đề *", title),
     field("Múi giờ *", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này."),
     field("Bắt đầu *", start),
-    field("Kết thúc *", end, "Phải sau thời gian bắt đầu; có thể rơi vào ngày hôm sau."),
+    field("Kết thúc *", end, endHint(limits)),
     field("Nhắc trước", reminder, "Tính từ thời điểm bắt đầu của lịch."),
     field("Quốc gia", country, "Không thể đặt lịch vào ngày nghỉ chính thức của quốc gia này."),
     field("Địa điểm", location),
@@ -391,6 +402,28 @@ export function renderError(
 
   if (detail === null) {
     box.append(el("p", "error__text", error.message));
+    return box;
+  }
+
+  if (detail.kind === "duration") {
+    const tooShort = detail.durationMinutes < detail.minMinutes;
+    box.append(
+      el(
+        "p",
+        "error__text",
+        tooShort
+          ? `Lịch quá ngắn: ${formatMinutes(detail.durationMinutes)}.`
+          : `Lịch quá dài: ${formatMinutes(detail.durationMinutes)}.`,
+      ),
+    );
+    box.append(
+      el(
+        "p",
+        "error__hint",
+        `Thời lượng phải từ ${formatMinutes(detail.minMinutes)} đến ` +
+          `${formatMinutes(detail.maxMinutes)}.`,
+      ),
+    );
     return box;
   }
 
