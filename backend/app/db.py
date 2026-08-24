@@ -35,15 +35,16 @@ def init_db() -> None:
 
 
 def _assert_schema_current() -> None:
-    """Fail loudly on a database created before timezone support was added.
+    """Fail loudly on a database created before the current columns existed.
 
     ``create_all`` only creates missing tables, so an existing ``schedules``
     table keeps its old columns. Better a clear error than silent misreads.
     """
     columns = {column["name"] for column in inspect(engine).get_columns("schedules")}
-    if "timezone" not in columns:
+    missing = {"timezone", "country"} - columns
+    if missing:
         raise RuntimeError(
-            "The 'schedules' table predates timezone support. "
+            f"The 'schedules' table is missing {sorted(missing)}. "
             "Run 'python migrate.py' from the backend directory to upgrade it."
         )
 

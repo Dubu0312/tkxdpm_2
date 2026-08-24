@@ -38,6 +38,8 @@ class Schedule(Base):
     end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     #: IANA timezone the schedule was entered in, e.g. "Asia/Ho_Chi_Minh".
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: ISO 3166-1 alpha-2 country whose public holidays apply; None = no check.
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow, onupdate=utcnow

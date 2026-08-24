@@ -3,11 +3,12 @@ import {
   ApiError,
   createSchedule,
   deleteSchedule,
+  listCountries,
   listSchedules,
   updateSchedule,
 } from "./api";
 import { browserTimezone, toApiValue } from "./format";
-import type { Schedule, ScheduleInput } from "./types";
+import type { Country, Schedule, ScheduleInput } from "./types";
 import {
   renderDetail,
   renderError,
@@ -32,6 +33,8 @@ interface State {
   draft: ScheduleInput | null;
   /** Timezone every listed time is displayed in; defaults to the browser's. */
   viewTimezone: string;
+  /** Countries the backend can check holidays for; loaded once at startup. */
+  countries: Country[];
 }
 
 const state: State = {
@@ -41,6 +44,7 @@ const state: State = {
   error: null,
   draft: null,
   viewTimezone: browserTimezone(),
+  countries: [],
 };
 
 const listSlot = document.querySelector<HTMLElement>("#list")!;
@@ -79,6 +83,10 @@ async function refresh(): Promise<void> {
   state.loading = true;
   render();
   try {
+    // The country list never changes while the page is open, so load it once.
+    if (state.countries.length === 0) {
+      state.countries = await listCountries();
+    }
     state.schedules = await listSchedules();
     state.error = null;
     state.draft = null;
@@ -137,6 +145,7 @@ function renderPanel(): HTMLElement {
         },
         state.draft,
         state.viewTimezone,
+        state.countries,
       );
     case "edit": {
       const schedule = find(state.view.id);
@@ -150,6 +159,7 @@ function renderPanel(): HTMLElement {
         },
         state.draft,
         state.viewTimezone,
+        state.countries,
       );
     }
     case "detail": {
@@ -162,6 +172,7 @@ function renderPanel(): HTMLElement {
           onDelete: () => void confirmDelete(schedule),
         },
         state.viewTimezone,
+        state.countries,
       );
     }
     default:
@@ -192,7 +203,7 @@ function render(): void {
   countSlot.textContent = `${state.schedules.length} lịch`;
 
   errorSlot.replaceChildren(
-    ...(state.error ? [renderError(state.error, state.viewTimezone)] : []),
+    ...(state.error ? [renderError(state.error, state.viewTimezone, state.countries)] : []),
   );
   errorSlot.hidden = state.error === null;
 }

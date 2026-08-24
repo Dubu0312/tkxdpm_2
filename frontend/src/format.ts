@@ -132,6 +132,12 @@ export function formatDate(iso: string, timeZone: string): string {
   }).format(parseInstant(iso));
 }
 
+/** "Thứ Ba, 17/02/2026" from a bare day key such as "2026-02-17". */
+export function formatDay(dayKey: string): string {
+  // Noon UTC keeps the date stable no matter how the formatter is anchored.
+  return formatDate(`${dayKey}T12:00:00Z`, "UTC");
+}
+
 export function formatTime(iso: string, timeZone: string): string {
   const { hour, minute } = partsInZone(parseInstant(iso), timeZone);
   return `${hour}:${minute}`;

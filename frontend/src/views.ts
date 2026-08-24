@@ -1,6 +1,7 @@
 import {
   dayKeyInZone,
   formatDate,
+  formatDay,
   formatDuration,
   formatRange,
   formatTime,
@@ -10,7 +11,7 @@ import {
   sameZone,
   toInputValue,
 } from "./format";
-import type { Schedule, ScheduleInput } from "./types";
+import type { Country, Schedule, ScheduleInput } from "./types";
 
 import type { ApiError } from "./api";
 
@@ -55,7 +56,7 @@ export function renderList(
   }
 
   for (const [day, items] of groupByDay(schedules, viewTimezone)) {
-    container.append(el("h3", "day", formatDate(`${day}T12:00:00Z`, "UTC")));
+    container.append(el("h3", "day", formatDay(day)));
     for (const schedule of items) {
       const card = el("button", "card");
       card.type = "button";
@@ -87,10 +88,17 @@ export function renderList(
   return container;
 }
 
+/** "Vietnam (VN)" when the country list is loaded, otherwise just the code. */
+export function countryLabel(code: string, countries: Country[]): string {
+  const match = countries.find((country) => country.code === code);
+  return match ? `${match.name} (${match.code})` : code;
+}
+
 export function renderDetail(
   schedule: Schedule,
   handlers: { onEdit: () => void; onDelete: () => void },
   viewTimezone: string,
+  countries: Country[] = [],
 ): HTMLElement {
   const panel = el("article", "panel");
   panel.append(el("h2", undefined, schedule.title));
@@ -123,6 +131,7 @@ export function renderDetail(
     facts.append(el("dt", undefined, label), el("dd", undefined, value));
   };
   addFact("Múi giờ", schedule.timezone);
+  addFact("Quốc gia", schedule.country ? countryLabel(schedule.country, countries) : "—");
   addFact("Địa điểm", schedule.location || "—");
   addFact("Mô tả", schedule.description || "—");
   addFact(
@@ -169,6 +178,24 @@ export function timezoneSelect(selected: string): HTMLSelectElement {
   return select;
 }
 
+/** A <select> of countries, with an explicit "no country" option first. */
+export function countrySelect(countries: Country[], selected: string | null): HTMLSelectElement {
+  const select = document.createElement("select");
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— Không kiểm tra ngày nghỉ —";
+  select.append(none);
+
+  for (const country of countries) {
+    const option = document.createElement("option");
+    option.value = country.code;
+    option.textContent = `${country.name} (${country.code})`;
+    select.append(option);
+  }
+  select.value = selected ?? "";
+  return select;
+}
+
 /** Values the form starts with: a rejected draft wins over the stored schedule. */
 function initialValues(
   schedule: Schedule | null,
@@ -184,6 +211,7 @@ function initialValues(
       start_time: toInputValue(schedule.start_time),
       end_time: toInputValue(schedule.end_time),
       timezone: schedule.timezone,
+      country: schedule.country,
     };
   }
   return {
@@ -193,6 +221,7 @@ function initialValues(
     start_time: nowInputValue(60, defaultTimezone),
     end_time: nowInputValue(120, defaultTimezone),
     timezone: defaultTimezone,
+    country: null,
   };
 }
 
@@ -201,6 +230,7 @@ export function renderForm(
   handlers: { onSubmit: (input: ScheduleInput) => void; onCancel: () => void },
   draft: ScheduleInput | null = null,
   defaultTimezone: string = "UTC",
+  countries: Country[] = [],
 ): HTMLElement {
   const values = initialValues(schedule, draft, defaultTimezone);
   const form = el("form", "panel form");
@@ -236,12 +266,14 @@ export function renderForm(
   description.placeholder = "Ghi chú thêm (không bắt buộc)";
 
   const timezone = timezoneSelect(values.timezone);
+  const country = countrySelect(countries, values.country);
 
   form.append(
     field("Tiêu đề *", title),
     field("Múi giờ *", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này."),
     field("Bắt đầu *", start),
     field("Kết thúc *", end, "Phải sau thời gian bắt đầu."),
+    field("Quốc gia", country, "Không thể đặt lịch vào ngày nghỉ chính thức của quốc gia này."),
     field("Địa điểm", location),
     field("Mô tả", description),
   );
@@ -264,6 +296,7 @@ export function renderForm(
       start_time: start.value,
       end_time: end.value,
       timezone: timezone.value,
+      country: country.value || null,
     });
   });
 
@@ -277,11 +310,43 @@ export function renderPlaceholder(text: string): HTMLElement {
 }
 
 
-export function renderError(error: ApiError, viewTimezone: string = "UTC"): HTMLElement {
+export function renderError(
+  error: ApiError,
+  viewTimezone: string = "UTC",
+  countries: Country[] = [],
+): HTMLElement {
   const box = el("div", "error__body");
+  const detail = error.detail;
 
-  if (error.conflicts.length === 0) {
+  if (detail === null) {
     box.append(el("p", "error__text", error.message));
+    return box;
+  }
+
+  if (detail.kind === "holiday") {
+    const country = countryLabel(detail.country, countries);
+    box.append(
+      el(
+        "p",
+        "error__text",
+        detail.holidays.length === 1
+          ? `Ngày này là ngày nghỉ chính thức của ${country}:`
+          : `Khoảng thời gian này rơi vào ${detail.holidays.length} ngày nghỉ chính thức của ${country}:`,
+      ),
+    );
+
+    const list = el("ul", "error__list");
+    for (const holiday of detail.holidays) {
+      list.append(el("li", undefined, `${formatDay(holiday.date)} — ${holiday.name}`));
+    }
+    box.append(list);
+    box.append(
+      el(
+        "p",
+        "error__hint",
+        "Hãy chọn ngày khác, hoặc bỏ chọn quốc gia nếu lịch này không theo ngày nghỉ của quốc gia đó.",
+      ),
+    );
     return box;
   }
 
@@ -289,14 +354,14 @@ export function renderError(error: ApiError, viewTimezone: string = "UTC"): HTML
     el(
       "p",
       "error__text",
-      error.conflicts.length === 1
+      detail.conflicts.length === 1
         ? "Khung giờ này bị trùng với một lịch đã có:"
-        : `Khung giờ này bị trùng với ${error.conflicts.length} lịch đã có:`,
+        : `Khung giờ này bị trùng với ${detail.conflicts.length} lịch đã có:`,
     ),
   );
 
   const list = el("ul", "error__list");
-  for (const conflict of error.conflicts) {
+  for (const conflict of detail.conflicts) {
     list.append(
       el(
         "li",

@@ -1,17 +1,20 @@
-"""One-off migration to the timezone-aware schema (Round 2 -> Round 3).
+"""Bring an existing database up to the current schema.
 
-Databases created before timezone support store naive *local* datetimes and have
-no ``timezone`` column. This script adds the column and rewrites the stored
-instants as UTC. It is idempotent: running it on an up-to-date database is a
-no-op.
+Two upgrades are handled, both idempotent — running this on an up-to-date
+database is a no-op:
+
+1. **Timezone support** (Round 3): databases created earlier store naive *local*
+   datetimes and have no ``timezone`` column. The column is added and the stored
+   instants are rewritten as UTC.
+2. **Holiday validation** (Round 4): adds the nullable ``country`` column.
 
     python migrate.py [--timezone Asia/Ho_Chi_Minh]
 
 ``--timezone`` is the zone the existing rows were entered in; it defaults to
-``DEFAULT_TIMEZONE`` from the environment.
+``DEFAULT_TIMEZONE`` from the environment. It only matters for upgrade 1.
 
-This is a deliberate stopgap for a single schema change — reach for Alembic once
-migrations become routine.
+This is a deliberate stopgap for a handful of schema changes — reach for Alembic
+once migrations become routine.
 """
 
 import argparse
@@ -26,11 +29,12 @@ from app.db import engine
 TIMESTAMP_COLUMNS = ("start_time", "end_time", "created_at", "updated_at")
 
 
-def _needs_migration() -> bool:
+def _columns() -> set[str] | None:
+    """Column names of the schedules table, or None when it does not exist yet."""
     inspector = inspect(engine)
     if "schedules" not in inspector.get_table_names():
-        return False
-    return "timezone" not in {column["name"] for column in inspector.get_columns("schedules")}
+        return None
+    return {column["name"] for column in inspector.get_columns("schedules")}
 
 
 def _local_to_utc(value: str, tz: ZoneInfo) -> str:
@@ -38,12 +42,8 @@ def _local_to_utc(value: str, tz: ZoneInfo) -> str:
     return parsed.astimezone(UTC).replace(tzinfo=None).isoformat(sep=" ")
 
 
-def migrate(timezone_name: str) -> int:
-    """Return the number of rows converted (0 when already migrated)."""
-    if not _needs_migration():
-        print("Database already uses the timezone-aware schema; nothing to do.")
-        return 0
-
+def _add_timezone_column(timezone_name: str) -> int:
+    """Add `timezone` and rewrite local datetimes as UTC. Returns rows converted."""
     tz = ZoneInfo(timezone_name)
     with engine.begin() as conn:
         conn.execute(
@@ -66,6 +66,34 @@ def migrate(timezone_name: str) -> int:
 
     print(f"Migrated {len(rows)} schedule(s) from {timezone_name} local time to UTC.")
     return len(rows)
+
+
+def _add_country_column() -> None:
+    """Add the nullable `country` column used by holiday validation."""
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE schedules ADD COLUMN country VARCHAR(2)"))
+    print("Added the 'country' column (existing schedules keep no country).")
+
+
+def migrate(timezone_name: str) -> int:
+    """Apply every pending upgrade. Returns the number of rows converted to UTC."""
+    columns = _columns()
+    if columns is None:
+        print("No 'schedules' table yet; it will be created when the app starts.")
+        return 0
+
+    converted = 0
+    applied = False
+    if "timezone" not in columns:
+        converted = _add_timezone_column(timezone_name)
+        applied = True
+    if "country" not in columns:
+        _add_country_column()
+        applied = True
+
+    if not applied:
+        print("Database is already up to date; nothing to do.")
+    return converted
 
 
 def main() -> None:

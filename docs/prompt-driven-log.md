@@ -435,3 +435,136 @@ quanh mốc DST.
 5. Các mục tồn đọng từ Round 1–2 vẫn giữ nguyên (chưa có E2E test cố định trong
    repo, chưa phân trang/tìm kiếm, chưa xác thực người dùng, race condition lý
    thuyết khi kiểm tra xung đột, port mặc định 8001).
+
+---
+
+## Round 4 — Add country holiday validation
+
+**Ngày:** 2026-08-25
+**Commit:** `round 04: add country holiday validation`
+
+### Yêu cầu
+
+Người dùng có thể xác định quốc gia liên quan đến lịch. Nếu ngày được chọn là
+ngày nghỉ chính thức của quốc gia đó thì không được tạo lịch, và frontend phải
+nêu rõ lý do. Ưu tiên: đơn giản để chạy/demo, mở rộng thêm quốc gia được, không
+hard-code logic hoặc dữ liệu rải rác. Phải hoạt động đúng cùng timezone và áp
+dụng cho cả tạo mới lẫn chỉnh sửa.
+
+### Hệ thống xác định ngày nghỉ như thế nào
+
+**Nguồn dữ liệu: package [`holidays`](https://pypi.org/project/holidays/) (thuần
+Python, offline).** Package này **tính** ngày nghỉ từ luật của từng quốc gia chứ
+không tra một bảng cố định — nên nó ra đúng cả ngày lễ trôi theo lịch âm hoặc
+theo Easter. Ví dụ kiểm chứng: Tết Nguyên đán Việt Nam 2026 rơi vào 17/02, và
+package tính ra đúng cả chuỗi 16–20/02 (giao thừa + 4 ngày Tết) mà không cần khai
+báo gì.
+
+Các phương án đã cân nhắc và lý do loại:
+
+| Phương án | Lý do không chọn |
+| --- | --- |
+| File JSON/YAML tự quản lý trong repo | Phải tự nhập dữ liệu cho từng nước **và từng năm**; ngày lễ âm lịch phải tra tay. Demo được nhưng sẽ mục sau một năm. |
+| Gọi API bên ngoài (nager.date…) | Cần mạng khi chạy và khi test — trái với "đơn giản để chạy và demo", làm test giòn. |
+| Hard-code trong code validation | Vi phạm trực tiếp yêu cầu "không hard-code dữ liệu rải rác". |
+
+**Cách xác định một lịch có rơi vào ngày nghỉ:**
+
+1. Lấy `start`/`end` của lịch (đang lưu UTC) đổi về **giờ địa phương theo
+   `timezone` của chính lịch đó** — nên "ngày nào" khớp với cuốn lịch người dùng
+   nhìn thấy, chứ không phải ngày theo UTC.
+2. Duyệt từng ngày trong khoảng **nửa mở** `[start_local, end_local)` — lịch kết
+   thúc đúng 00:00 không chạm sang ngày hôm sau.
+3. Với mỗi ngày, tra tên ngày nghỉ của `country`. Có kết quả → từ chối `409` kèm
+   danh sách đầy đủ (ngày + tên).
+
+**Không rải rác:** toàn bộ hiểu biết về ngày nghỉ nằm trong một module duy nhất
+`backend/app/holiday_calendar.py` (danh sách quốc gia, chuẩn hóa mã, tra cứu,
+quy tắc khoảng ngày). Router chỉ gọi `_reject_holidays()`, dùng chung cho cả
+`POST` và `PUT`. Frontend không chứa danh sách quốc gia nào — nó lấy từ
+`GET /api/countries`, vốn cũng sinh ra từ registry của package.
+
+**Mở rộng quốc gia:** không cần sửa code. 250 quốc gia package hỗ trợ đều hiện ra
+trong ô chọn; muốn thêm nước mới thì nâng phiên bản package.
+
+### Quyết định thiết kế khác
+
+- **`country` là tùy chọn** (`NULL` = không kiểm tra ngày nghỉ). Ép buộc chọn
+  quốc gia sẽ chặn cả những lịch không liên quan đến ngày nghỉ nước nào.
+- **Mã ISO 3166-1 alpha-2**, chuẩn hóa in hoa khi lưu; mã lạ trả `422`.
+- **Trả `409 Conflict`** với `code: "holiday_conflict"`, cùng dạng cấu trúc như
+  `schedule_conflict` đã có. `422` vẫn dành riêng cho payload sai định dạng; cả
+  hai kiểu từ chối "khung giờ này không dùng được" đều là `409` để frontend xử lý
+  thống nhất.
+- **Kiểm tra ngày nghỉ trước kiểm tra trùng lịch**: ngày nghỉ chặn cả ngày nên
+  đó là thông báo hữu ích hơn cho người dùng.
+- **Frontend gom hai kiểu từ chối vào một union có discriminator**
+  (`ApiError.detail: {kind:"conflict"|"holiday", …}`) thay vì thêm mảng thứ hai
+  song song, để thêm kiểu từ chối sau này không làm phình lớp lỗi.
+
+### Đã thay đổi
+
+**Backend**
+- `app/holiday_calendar.py` (mới) — `supported_countries()`, `is_supported()`,
+  `holiday_on()`, `holidays_in_range()`.
+- `app/models.py` — thêm cột `country VARCHAR(2)` nullable.
+- `app/schemas.py` — `country` trong `ScheduleInput`/`ScheduleRead` kèm validator;
+  `ScheduleInput.local_range()`; thêm `HolidayHit`, `HolidayDetail`, `CountryRead`.
+- `app/routers/schedules.py` — `_reject_holidays()` dùng chung cho `POST` và `PUT`.
+- `app/routers/countries.py` (mới) — `GET /api/countries`.
+- `migrate.py` — tổng quát hóa thành nhiều bước idempotent, thêm bước cột `country`.
+- `app/db.py` — schema guard kiểm tra cả `timezone` lẫn `country`.
+- `requirements.in/.txt` — thêm `holidays`.
+
+**Frontend**
+- `src/types.ts` — `country` trên `Schedule`/`ScheduleInput`, thêm `Country`,
+  `HolidayHit`.
+- `src/api.ts` — `RefusalDetail` dạng union, nhận diện body `holiday_conflict`,
+  thêm `listCountries()`.
+- `src/views.ts` — `countrySelect()`, `countryLabel()`, ô chọn quốc gia trong
+  form, dòng "Quốc gia" ở panel chi tiết, `renderError()` xử lý cả hai kiểu từ chối.
+- `src/format.ts` — `formatDay()` cho khóa ngày dạng `2026-02-17` (gộp luôn mẹo
+  format vốn đang lặp ở tiêu đề nhóm ngày).
+- `src/main.ts` — tải danh sách quốc gia một lần khi khởi động.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **77 passed** (54 cũ + 23 test ngày nghỉ) — không regression |
+| Frontend test | `npm test` | **62 passed** (49 cũ + 13 mới) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| Migration | chạy `migrate.py` trên bản sao database kiểu Round 2 | thêm cả `timezone` (đổi sang UTC) lẫn `country`, chạy lần hai là no-op |
+| **End-to-end thật** | UI thật trong jsdom → backend `:8001` → SQLite | **1 passed** (chi tiết bên dưới) |
+| Kiểm chứng bằng curl | 4 request | Tết VN → **409** kèm `Lunar New Year`; cùng ngày với `JP` → **201**; 01/01 08:00 giờ Tokyo với `JP` → **409**; không chọn quốc gia → **201** |
+
+Nội dung bài E2E: ô chọn quốc gia được nạp từ backend (>100 mục, frontend không
+hard-code) → tạo lịch mùng 1 Tết với `VN` bị **409**, thông báo hiện "ngày nghỉ
+chính thức của Vietnam (VN)", tên `Lunar New Year`, ngày `17/02/2026`, database
+vẫn rỗng và form giữ nguyên dữ liệu đã nhập kể cả quốc gia → đổi sang `JP` cùng
+ngày đó thì **được tạo**, panel chi tiết hiện "Japan (JP)" → sửa lịch đó sang
+01/01 (ngày nghỉ Nhật) bị **409** và bản ghi không đổi → tạo lịch 01/01 08:00 giờ
+Tokyo (theo UTC còn là 31/12) vẫn bị **409**, xác nhận ngày nghỉ xét theo giờ địa
+phương.
+
+Regression đã chạy lại đầy đủ: toàn bộ test CRUD, timezone và conflict của các
+round trước đều pass không sửa gì (ngoài việc bổ sung trường `country` vào dữ
+liệu mẫu của test frontend).
+
+### Vấn đề còn tồn tại / lưu ý
+
+1. **Chỉ chặn ngày nghỉ cấp quốc gia**, chưa xét ngày nghỉ theo bang/tỉnh
+   (package có hỗ trợ `subdiv`, chưa dùng) và chưa xét cuối tuần.
+2. **Chặn cứng, không cho ghi đè.** Không có tùy chọn "vẫn tạo dù là ngày nghỉ" —
+   đúng theo yêu cầu, nhưng thực tế nhiều nơi vẫn cần đặt lịch ngày lễ.
+3. **Một lịch chỉ gắn được một quốc gia.** Cuộc họp xuyên biên giới liên quan
+   nhiều nước thì chưa diễn tả được.
+4. **Tên ngày nghỉ chỉ có tiếng Anh** (package hỗ trợ đa ngôn ngữ qua tham số
+   `language`, chưa dùng); giao diện còn lại là tiếng Việt.
+5. **Danh sách ngày nghỉ được cache trong tiến trình** (`lru_cache`), đối tượng
+   của package tự mở rộng dữ liệu theo năm khi tra cứu — về lý thuyết có thể bị
+   truy cập đồng thời từ threadpool của FastAPI. Rủi ro thấp với ứng dụng local.
+6. **Ô chọn quốc gia liệt kê cả 250 mục**, chưa có tìm kiếm — cùng vấn đề với ô
+   chọn múi giờ ở Round 3.
+7. Các mục tồn đọng từ Round 1–3 vẫn giữ nguyên.

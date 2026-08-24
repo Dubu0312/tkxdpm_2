@@ -3,10 +3,11 @@
 Ứng dụng đặt lịch (scheduling) chạy local: backend Python + SQLite, frontend TypeScript.
 
 Chức năng hiện có: tạo lịch, xem danh sách, xem chi tiết, chỉnh sửa và xóa lịch.
-Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, múi giờ, địa điểm và mô tả
-(hai trường sau không bắt buộc), kèm mốc `created_at` / `updated_at`. Lịch có thể
-được tạo ở bất kỳ múi giờ nào và xem lại ở múi giờ khác mà không đổi thời điểm
-thực. Backend từ chối các lịch bị trùng khung giờ với lịch đã có.
+Mỗi lịch gồm tiêu đề, thời gian bắt đầu / kết thúc, múi giờ, quốc gia, địa điểm
+và mô tả (ba trường sau không bắt buộc), kèm mốc `created_at` / `updated_at`.
+Lịch có thể được tạo ở bất kỳ múi giờ nào và xem lại ở múi giờ khác mà không đổi
+thời điểm thực. Backend từ chối lịch bị trùng khung giờ với lịch đã có, và từ
+chối lịch rơi vào ngày nghỉ chính thức của quốc gia được chọn.
 
 ## Tech stack
 
@@ -28,8 +29,10 @@ thực. Backend từ chối các lịch bị trùng khung giờ với lịch đ�
 │   │   ├── db.py           # SQLAlchemy engine + session (SQLite)
 │   │   ├── models.py       # Schedule ORM model (instants stored in UTC)
 │   │   ├── schemas.py      # Pydantic schemas + timezone conversion
+│   │   ├── holiday_calendar.py # public-holiday lookup (single source)
 │   │   ├── routers/
-│   │   │   └── schedules.py# CRUD endpoints under /api/schedules
+│   │   │   ├── schedules.py# CRUD endpoints under /api/schedules
+│   │   │   └── countries.py# GET /api/countries
 │   │   └── main.py         # FastAPI app: GET /, GET /health, router
 │   ├── migrate.py          # one-off upgrade of pre-timezone databases
 │   ├── tests/              # pytest
@@ -143,10 +146,12 @@ Base URL: `http://127.0.0.1:8001`.
 | GET    | `/api/schedules/{id}`  | Chi tiết một lịch                           |
 | PUT    | `/api/schedules/{id}`  | Cập nhật toàn bộ một lịch                   |
 | DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
+| GET    | `/api/countries`       | Danh sách quốc gia kiểm tra được ngày nghỉ  |
 
 Schedule fields: `title` (bắt buộc, ≤200 ký tự), `start_time`, `end_time` (bắt
 buộc, `end_time` phải sau `start_time`), `timezone` (tên IANA, mặc định
-`DEFAULT_TIMEZONE`), `location` và `description` (tùy chọn), cùng `id`,
+`DEFAULT_TIMEZONE`), `country` (mã ISO 3166-1 alpha-2, tùy chọn), `location` và
+`description` (tùy chọn), cùng `id`,
 `created_at`, `updated_at` do server sinh ra. Dữ liệu không hợp lệ trả về `422`
 kèm thông báo, id không tồn tại trả về `404`.
 
@@ -182,6 +187,45 @@ curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/j
 # -> 409 Conflict
 ```
 
+### Ngày nghỉ theo quốc gia
+
+Nếu lịch có `country`, backend từ chối lịch rơi vào **ngày nghỉ chính thức** của
+quốc gia đó và trả về `409 Conflict`. Bỏ trống `country` nghĩa là không kiểm tra.
+
+Dữ liệu ngày nghỉ lấy từ package [`holidays`](https://pypi.org/project/holidays/):
+nó **tính** ngày nghỉ từ luật của từng nước (kể cả ngày lễ trôi như Tết Nguyên
+đán hay Easter) thay vì tra bảng cố định. Nhờ vậy repo không chứa dữ liệu ngày
+nghỉ nào, chạy hoàn toàn offline, và không cần cập nhật theo từng năm. Toàn bộ
+phần này nằm gọn trong [`app/holiday_calendar.py`](backend/app/holiday_calendar.py);
+danh sách quốc gia được lấy từ chính package qua `GET /api/countries` nên frontend
+không hard-code quốc gia nào.
+
+Ngày được xét là **ngày địa phương theo `timezone` của lịch**, không phải theo
+UTC — 08:00 ngày 01/01 giờ Tokyo vẫn là 01/01 dù theo UTC còn là 31/12. Khoảng
+thời gian là nửa mở: lịch kết thúc đúng 00:00 không tính sang ngày hôm sau. Lịch
+trải nhiều ngày sẽ báo mọi ngày nghỉ mà nó chạm vào.
+
+Body của `409`:
+
+```json
+{
+  "detail": {
+    "code": "holiday_conflict",
+    "message": "VN observes 1 public holiday in this time range",
+    "country": "VN",
+    "holidays": [{ "date": "2026-02-17", "name": "Lunar New Year" }]
+  }
+}
+```
+
+Ví dụ:
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/json' \
+  -d '{"title":"Họp Tết","start_time":"2026-02-17T09:00:00","end_time":"2026-02-17T10:00:00","timezone":"Asia/Ho_Chi_Minh","country":"VN"}'
+# -> 409 Conflict (Lunar New Year)
+```
+
 ### Xung đột thời gian
 
 `POST` và `PUT` từ chối lịch có khung giờ chồng lấn lịch đã tồn tại và trả về
@@ -191,7 +235,9 @@ lúc lịch kia bắt đầu) vẫn hợp lệ. Khi cập nhật, lịch đang s
 với chính nó.
 
 Kiểm tra này nằm ở backend và là nguồn duy nhất quyết định hợp lệ hay không;
-frontend chỉ hiển thị lại kết quả, không kiểm tra trùng lịch riêng.
+frontend chỉ hiển thị lại kết quả, không kiểm tra trùng lịch riêng. Ngày nghỉ
+được kiểm tra **trước** xung đột thời gian, vì ngày nghỉ chặn cả ngày nên đó là
+thông báo hữu ích hơn.
 
 Body của `409`:
 
@@ -232,16 +278,16 @@ cd frontend && npm run typecheck && npm test
 SQLite is used by default; the database file and the `schedules` table are
 created automatically at `data/app.db` when the app starts.
 
-Nếu database được tạo **trước** khi có hỗ trợ múi giờ (trước Round 3), app sẽ báo
-lỗi khi khởi động vì bảng `schedules` còn thiếu cột `timezone`. Nâng cấp bằng:
+Nếu database được tạo bằng phiên bản cũ hơn, app sẽ báo lỗi khi khởi động vì bảng
+`schedules` thiếu cột (`timezone` từ Round 3, `country` từ Round 4). Nâng cấp bằng:
 
 ```bash
 cd backend
 python migrate.py --timezone Asia/Ho_Chi_Minh   # múi giờ các bản ghi cũ đã nhập
 ```
 
-Script này thêm cột `timezone` và đổi các mốc thời gian cũ (giờ địa phương) sang
-UTC. Chạy lại lần nữa là no-op. The `data/` directory is tracked but its
+Script này thêm các cột còn thiếu và đổi các mốc thời gian cũ (giờ địa phương)
+sang UTC. Chạy lại lần nữa là no-op. The `data/` directory is tracked but its
 `*.db` contents are ignored by Git. Point `DATABASE_URL` elsewhere in `.env` to
 use a different location or engine.
 

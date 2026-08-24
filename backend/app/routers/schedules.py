@@ -12,9 +12,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import holiday_calendar
 from app.db import get_session
 from app.models import Schedule
-from app.schemas import ConflictDetail, ScheduleCreate, ScheduleRead, ScheduleUpdate
+from app.schemas import (
+    ConflictDetail,
+    HolidayDetail,
+    HolidayHit,
+    ScheduleCreate,
+    ScheduleInput,
+    ScheduleRead,
+    ScheduleUpdate,
+)
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
@@ -23,8 +32,11 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 CONFLICT_RESPONSE = {
     status.HTTP_409_CONFLICT: {
-        "model": ConflictDetail,
-        "description": "The time range overlaps one or more existing schedules",
+        "model": ConflictDetail | HolidayDetail,
+        "description": (
+            "The time range overlaps an existing schedule, or falls on a public "
+            "holiday of the schedule's country"
+        ),
     }
 }
 
@@ -83,6 +95,32 @@ def _reject_conflicts(
     )
 
 
+def _reject_holidays(payload: ScheduleInput) -> None:
+    """Raise 409 if the schedule falls on a public holiday of its country.
+
+    Days are resolved in the schedule's own timezone, so the check matches the
+    calendar the user is looking at rather than UTC.
+    """
+    if payload.country is None:
+        return
+    start_local, end_local = payload.local_range()
+    hits = holiday_calendar.holidays_in_range(payload.country, start_local, end_local)
+    if not hits:
+        return
+    detail = HolidayDetail(
+        message=(
+            f"{payload.country} observes {len(hits)} public "
+            f"holiday{'s' if len(hits) > 1 else ''} in this time range"
+        ),
+        country=payload.country,
+        holidays=[HolidayHit(date=hit.date, name=hit.name) for hit in hits],
+    )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=detail.model_dump(mode="json"),
+    )
+
+
 @router.get("", response_model=list[ScheduleRead])
 def list_schedules(session: SessionDep) -> list[ScheduleRead]:
     """Return every schedule, earliest start first (ordered by real instant)."""
@@ -97,6 +135,7 @@ def list_schedules(session: SessionDep) -> list[ScheduleRead]:
     responses=CONFLICT_RESPONSE,
 )
 def create_schedule(payload: ScheduleCreate, session: SessionDep) -> ScheduleRead:
+    _reject_holidays(payload)
     _reject_conflicts(session, payload.start_time, payload.end_time)
     schedule = Schedule(**payload.to_columns())
     session.add(schedule)
@@ -117,6 +156,7 @@ def update_schedule(
     session: SessionDep,
 ) -> ScheduleRead:
     schedule = _get_or_404(session, schedule_id)
+    _reject_holidays(payload)
     _reject_conflicts(session, payload.start_time, payload.end_time, exclude_id=schedule_id)
     for field, value in payload.to_columns().items():
         setattr(schedule, field, value)

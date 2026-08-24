@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "./env";
-import type { Schedule, ScheduleInput } from "./types";
+import type { Country, HolidayHit, Schedule, ScheduleInput } from "./types";
 
 export interface HealthResponse {
   status: string;
@@ -7,17 +7,22 @@ export interface HealthResponse {
   detail: string | null;
 }
 
+/** Why the backend refused a schedule, when it said so in a structured way. */
+export type RefusalDetail =
+  | { kind: "conflict"; conflicts: Schedule[] }
+  | { kind: "holiday"; country: string; holidays: HolidayHit[] };
+
 /** Error carrying the message the backend sent back. */
 export class ApiError extends Error {
   readonly status: number;
-  /** Schedules the rejected time range overlaps (HTTP 409 only). */
-  readonly conflicts: Schedule[];
+  /** Structured reason for an HTTP 409, or null for every other error. */
+  readonly detail: RefusalDetail | null;
 
-  constructor(message: string, status: number, conflicts: Schedule[] = []) {
+  constructor(message: string, status: number, detail: RefusalDetail | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
-    this.conflicts = conflicts;
+    this.detail = detail;
   }
 }
 
@@ -26,19 +31,31 @@ interface ValidationItem {
   loc?: (string | number)[];
 }
 
-interface ConflictDetail {
+interface ConflictBody {
   code: "schedule_conflict";
   message: string;
   conflicts: Schedule[];
 }
 
-function isConflictDetail(detail: unknown): detail is ConflictDetail {
+interface HolidayBody {
+  code: "holiday_conflict";
+  message: string;
+  country: string;
+  holidays: HolidayHit[];
+}
+
+function hasCode(detail: unknown, code: string): boolean {
   return (
-    typeof detail === "object" &&
-    detail !== null &&
-    (detail as { code?: unknown }).code === "schedule_conflict" &&
-    Array.isArray((detail as { conflicts?: unknown }).conflicts)
+    typeof detail === "object" && detail !== null && (detail as { code?: unknown }).code === code
   );
+}
+
+function isConflictBody(detail: unknown): detail is ConflictBody {
+  return hasCode(detail, "schedule_conflict") && Array.isArray((detail as ConflictBody).conflicts);
+}
+
+function isHolidayBody(detail: unknown): detail is HolidayBody {
+  return hasCode(detail, "holiday_conflict") && Array.isArray((detail as HolidayBody).holidays);
 }
 
 /** Turns a FastAPI error body into an ApiError, keeping any conflict payload. */
@@ -48,8 +65,18 @@ function errorFromBody(body: unknown, status: number, fallback: string): ApiErro
       ? (body as { detail: unknown }).detail
       : undefined;
 
-  if (isConflictDetail(detail)) {
-    return new ApiError(detail.message, status, detail.conflicts);
+  if (isConflictBody(detail)) {
+    return new ApiError(detail.message, status, {
+      kind: "conflict",
+      conflicts: detail.conflicts,
+    });
+  }
+  if (isHolidayBody(detail)) {
+    return new ApiError(detail.message, status, {
+      kind: "holiday",
+      country: detail.country,
+      holidays: detail.holidays,
+    });
   }
   if (typeof detail === "string") {
     return new ApiError(detail, status);
@@ -101,3 +128,5 @@ export const updateSchedule = (id: number, input: ScheduleInput): Promise<Schedu
 
 export const deleteSchedule = (id: number): Promise<void> =>
   request<void>(`/api/schedules/${id}`, { method: "DELETE" });
+
+export const listCountries = (): Promise<Country[]> => request<Country[]>("/api/countries");

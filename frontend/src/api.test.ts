@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, createSchedule, deleteSchedule, listSchedules } from "./api";
+import { ApiError, createSchedule, deleteSchedule, listCountries, listSchedules } from "./api";
 
 const INPUT = {
   title: "Họp",
@@ -9,6 +9,7 @@ const INPUT = {
   start_time: "2026-09-01T09:00:00",
   end_time: "2026-09-01T10:00:00",
   timezone: "Asia/Tokyo",
+  country: null,
 };
 
 function mockFetch(response: Response | Error) {
@@ -69,6 +70,7 @@ describe("api client", () => {
       start_time: "2026-09-01T09:00:00+07:00",
       end_time: "2026-09-01T10:00:00+07:00",
       timezone: "Asia/Ho_Chi_Minh",
+      country: null,
       created_at: "2026-08-25T08:00:00+00:00",
       updated_at: "2026-08-25T08:00:00+00:00",
     };
@@ -85,13 +87,39 @@ describe("api client", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error.status).toBe(409);
     expect(error.message).toBe("Time range overlaps 1 existing schedule");
-    expect(error.conflicts).toEqual([conflict]);
+    expect(error.detail).toEqual({ kind: "conflict", conflicts: [conflict] });
   });
 
-  it("leaves conflicts empty for other errors", async () => {
+  it("keeps the holidays from a 409 holiday response", async () => {
+    const body = {
+      detail: {
+        code: "holiday_conflict",
+        message: "VN observes 1 public holiday in this time range",
+        country: "VN",
+        holidays: [{ date: "2026-02-17", name: "Lunar New Year" }],
+      },
+    };
+    mockFetch(new Response(JSON.stringify(body), { status: 409 }));
+
+    const error = (await createSchedule(INPUT).catch((err: unknown) => err)) as ApiError;
+    expect(error.status).toBe(409);
+    expect(error.detail).toEqual({
+      kind: "holiday",
+      country: "VN",
+      holidays: [{ date: "2026-02-17", name: "Lunar New Year" }],
+    });
+  });
+
+  it("leaves the detail empty for other errors", async () => {
     mockFetch(new Response(JSON.stringify({ detail: "Schedule not found" }), { status: 404 }));
     const error = (await listSchedules().catch((err: unknown) => err)) as ApiError;
-    expect(error.conflicts).toEqual([]);
+    expect(error.detail).toBeNull();
+  });
+
+  it("fetches the country list", async () => {
+    const countries = [{ code: "VN", name: "Vietnam" }];
+    mockFetch(new Response(JSON.stringify(countries), { status: 200 }));
+    expect(await listCountries()).toEqual(countries);
   });
 
   it("reports an unreachable backend instead of throwing a raw fetch error", async () => {

@@ -8,6 +8,7 @@ click==8.4.2
 fastapi==0.141.1
 greenlet==3.5.5
 h11==0.16.0
+holidays==0.103
 httptools==0.8.0
 idna==3.19
 pydantic-settings==2.15.0

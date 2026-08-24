@@ -2,7 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Schedule } from "./types";
 import { ApiError } from "./api";
-import { renderDetail, renderError, renderForm, renderList, timezoneSelect } from "./views";
+import {
+  countryLabel,
+  countrySelect,
+  renderDetail,
+  renderError,
+  renderForm,
+  renderList,
+  timezoneSelect,
+} from "./views";
 
 const TOKYO = "Asia/Tokyo";
 const SAIGON = "Asia/Ho_Chi_Minh";
@@ -16,6 +24,7 @@ function schedule(overrides: Partial<Schedule> = {}): Schedule {
     start_time: "2026-09-01T09:00:00+09:00",
     end_time: "2026-09-01T10:30:00+09:00",
     timezone: TOKYO,
+    country: null,
     created_at: "2026-08-25T08:00:00+00:00",
     updated_at: "2026-08-25T08:00:00+00:00",
     ...overrides,
@@ -85,8 +94,8 @@ describe("renderDetail", () => {
       { onEdit: () => {}, onDelete: () => {} },
       TOKYO,
     );
-    // First fact is the timezone; the two optional fields follow.
-    expect([...node.querySelectorAll("dd")].map((dd) => dd.textContent).slice(1, 3)).toEqual([
+    // Facts are timezone, country, then the two optional fields.
+    expect([...node.querySelectorAll("dd")].map((dd) => dd.textContent).slice(2, 4)).toEqual([
       "—",
       "—",
     ]);
@@ -101,7 +110,7 @@ describe("renderForm", () => {
     expect(inputs[0]!.value).toBe("Họp nhóm");
     expect(inputs[1]!.value).toBe("2026-09-01T09:00");
     expect(inputs[2]!.value).toBe("2026-09-01T10:30");
-    expect(form.querySelector("select")!.value).toBe(TOKYO);
+    expect(form.querySelectorAll("select")[0]!.value).toBe(TOKYO);
   });
 
   it("starts blank with default times when creating", () => {
@@ -127,6 +136,7 @@ describe("renderForm", () => {
       start_time: "2026-09-01T09:00",
       end_time: "2026-09-01T10:30",
       timezone: TOKYO,
+      country: null,
     });
   });
 
@@ -148,7 +158,7 @@ describe("renderError", () => {
   });
 
   it("lists the conflicting schedule with its time range", () => {
-    const node = renderError(new ApiError("overlap", 409, [schedule()]), TOKYO);
+    const node = renderError(new ApiError("overlap", 409, { kind: "conflict", conflicts: [schedule()] }), TOKYO);
     expect(node.querySelector(".error__text")?.textContent).toContain("trùng với một lịch đã có");
 
     const items = [...node.querySelectorAll(".error__list li")];
@@ -162,10 +172,10 @@ describe("renderError", () => {
 
   it("counts multiple conflicts", () => {
     const node = renderError(
-      new ApiError("overlap", 409, [
-        schedule({ id: 1 }),
-        schedule({ id: 2, title: "Lịch thứ hai" }),
-      ]),
+      new ApiError("overlap", 409, {
+        kind: "conflict",
+        conflicts: [schedule({ id: 1 }), schedule({ id: 2, title: "Lịch thứ hai" })],
+      }),
       TOKYO,
     );
     expect(node.querySelector(".error__text")?.textContent).toContain("2 lịch đã có");
@@ -173,7 +183,7 @@ describe("renderError", () => {
   });
 
   it("renders conflict titles as text, not markup", () => {
-    const node = renderError(new ApiError("overlap", 409, [schedule({ title: "<b>x</b>" })]), TOKYO);
+    const node = renderError(new ApiError("overlap", 409, { kind: "conflict", conflicts: [schedule({ title: "<b>x</b>" })] }), TOKYO);
     expect(node.querySelector("b")).toBeNull();
   });
 });
@@ -187,6 +197,7 @@ describe("renderForm draft", () => {
       start_time: "2026-09-05T14:00",
       end_time: "2026-09-05T15:00",
       timezone: SAIGON,
+      country: "VN",
     };
     const form = renderForm(schedule(), { onSubmit: () => {}, onCancel: () => {} }, draft);
     const inputs = form.querySelectorAll<HTMLInputElement>("input");
@@ -195,7 +206,7 @@ describe("renderForm draft", () => {
     expect(inputs[2]!.value).toBe("2026-09-05T15:00");
     expect(inputs[3]!.value).toBe("Phòng B");
     expect(form.querySelector("textarea")!.value).toBe("ghi chú");
-    expect(form.querySelector("select")!.value).toBe(SAIGON);
+    expect(form.querySelectorAll("select")[0]!.value).toBe(SAIGON);
   });
 
   it("falls back to the stored schedule when there is no draft", () => {
@@ -263,7 +274,7 @@ describe("viewing schedules in another timezone", () => {
   });
 
   it("renders conflicting schedules in the view timezone", () => {
-    const node = renderError(new ApiError("overlap", 409, [schedule()]), SAIGON);
+    const node = renderError(new ApiError("overlap", 409, { kind: "conflict", conflicts: [schedule()] }), SAIGON);
     expect(node.querySelector(".error__list li")?.textContent).toContain("07:00 – 08:30");
   });
 });
@@ -282,6 +293,115 @@ describe("timezoneSelect", () => {
 
   it("defaults a new schedule's form to the view timezone", () => {
     const form = renderForm(null, { onSubmit: () => {}, onCancel: () => {} }, null, SAIGON);
-    expect(form.querySelector("select")!.value).toBe(SAIGON);
+    expect(form.querySelectorAll("select")[0]!.value).toBe(SAIGON);
+  });
+});
+
+const COUNTRIES = [
+  { code: "JP", name: "Japan" },
+  { code: "US", name: "United States" },
+  { code: "VN", name: "Vietnam" },
+];
+
+describe("country selection", () => {
+  it("offers an explicit no-country option first", () => {
+    const select = countrySelect(COUNTRIES, null);
+    expect(select.value).toBe("");
+    expect(select.options[0]!.textContent).toContain("Không kiểm tra ngày nghỉ");
+    expect(select.options.length).toBe(COUNTRIES.length + 1);
+  });
+
+  it("preselects the schedule's country", () => {
+    expect(countrySelect(COUNTRIES, "VN").value).toBe("VN");
+  });
+
+  it("labels a country by name, falling back to the bare code", () => {
+    expect(countryLabel("VN", COUNTRIES)).toBe("Vietnam (VN)");
+    expect(countryLabel("VN", [])).toBe("VN");
+  });
+
+  it("puts the country in the submitted values", () => {
+    const onSubmit = vi.fn();
+    const form = renderForm(
+      schedule({ country: "US" }),
+      { onSubmit, onCancel: () => {} },
+      null,
+      TOKYO,
+      COUNTRIES,
+    );
+    expect(form.querySelectorAll<HTMLSelectElement>("select")[1]!.value).toBe("US");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(onSubmit.mock.calls[0]![0].country).toBe("US");
+  });
+
+  it("submits null when no country is chosen", () => {
+    const onSubmit = vi.fn();
+    const form = renderForm(schedule(), { onSubmit, onCancel: () => {} }, null, TOKYO, COUNTRIES);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(onSubmit.mock.calls[0]![0].country).toBeNull();
+  });
+
+  it("shows the country in the detail panel", () => {
+    const handlers = { onEdit: () => {}, onDelete: () => {} };
+    const withCountry = renderDetail(schedule({ country: "VN" }), handlers, TOKYO, COUNTRIES);
+    expect([...withCountry.querySelectorAll("dd")][1]!.textContent).toBe("Vietnam (VN)");
+
+    const without = renderDetail(schedule(), handlers, TOKYO, COUNTRIES);
+    expect([...without.querySelectorAll("dd")][1]!.textContent).toBe("—");
+  });
+});
+
+describe("renderError for holidays", () => {
+  const holidayError = (holidays: { date: string; name: string }[]) =>
+    new ApiError("holiday", 409, { kind: "holiday", country: "VN", holidays });
+
+  it("names the holiday, its date and the country", () => {
+    const node = renderError(
+      holidayError([{ date: "2026-02-17", name: "Lunar New Year" }]),
+      TOKYO,
+      COUNTRIES,
+    );
+    expect(node.querySelector(".error__text")?.textContent).toContain(
+      "ngày nghỉ chính thức của Vietnam (VN)",
+    );
+    const items = [...node.querySelectorAll(".error__list li")];
+    expect(items).toHaveLength(1);
+    expect(items[0]!.textContent).toContain("17/02/2026");
+    expect(items[0]!.textContent).toContain("Lunar New Year");
+  });
+
+  it("says how to proceed", () => {
+    const node = renderError(holidayError([{ date: "2026-02-17", name: "Tết" }]), TOKYO, COUNTRIES);
+    expect(node.querySelector(".error__hint")?.textContent).toContain("bỏ chọn quốc gia");
+  });
+
+  it("lists every holiday in a multi-day range", () => {
+    const node = renderError(
+      holidayError([
+        { date: "2026-02-16", name: "Lunar New Year's Eve" },
+        { date: "2026-02-17", name: "Lunar New Year" },
+      ]),
+      TOKYO,
+      COUNTRIES,
+    );
+    expect(node.querySelector(".error__text")?.textContent).toContain("2 ngày nghỉ");
+    expect(node.querySelectorAll(".error__list li")).toHaveLength(2);
+  });
+
+  it("formats the holiday date independently of the view timezone", () => {
+    const inTokyo = renderError(holidayError([{ date: "2026-02-17", name: "Tết" }]), TOKYO, COUNTRIES);
+    const inNewYork = renderError(
+      holidayError([{ date: "2026-02-17", name: "Tết" }]),
+      "America/New_York",
+      COUNTRIES,
+    );
+    expect(inTokyo.querySelector(".error__list li")?.textContent).toBe(
+      inNewYork.querySelector(".error__list li")?.textContent,
+    );
+  });
+
+  it("renders holiday names as text, not markup", () => {
+    const node = renderError(holidayError([{ date: "2026-02-17", name: "<b>x</b>" }]), TOKYO, COUNTRIES);
+    expect(node.querySelector("b")).toBeNull();
   });
 });

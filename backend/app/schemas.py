@@ -13,7 +13,7 @@ Time convention
   ``created_at`` / ``updated_at`` are rendered in UTC.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from app import holiday_calendar
 from app.config import settings
 
 
@@ -71,12 +72,32 @@ class ScheduleInput(ScheduleFields):
         max_length=64,
         description="IANA timezone name, e.g. 'Asia/Ho_Chi_Minh'",
     )
+    country: str | None = Field(
+        default=None,
+        max_length=2,
+        description="ISO 3166-1 alpha-2 country whose public holidays apply",
+    )
 
     @field_validator("timezone")
     @classmethod
     def _known_timezone(cls, value: str) -> str:
         resolve_timezone(value)
         return value
+
+    @field_validator("country")
+    @classmethod
+    def _known_country(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        code = holiday_calendar.normalise(value)
+        if not holiday_calendar.is_supported(code):
+            raise ValueError(f"Unknown country: {value!r}")
+        return code
+
+    def local_range(self) -> tuple[datetime, datetime]:
+        """Start and end as aware datetimes in the schedule's own timezone."""
+        tz = resolve_timezone(self.timezone)
+        return from_utc(self.start_time, tz), from_utc(self.end_time, tz)
 
     @model_validator(mode="after")
     def _normalise(self):
@@ -109,6 +130,7 @@ class ScheduleRead(ScheduleFields):
     start_time: datetime
     end_time: datetime
     timezone: str
+    country: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -126,6 +148,7 @@ class ScheduleRead(ScheduleFields):
             description=schedule.description,
             location=schedule.location,
             timezone=schedule.timezone,
+            country=schedule.country,
             start_time=from_utc(schedule.start_time, tz),
             end_time=from_utc(schedule.end_time, tz),
             created_at=schedule.created_at.replace(tzinfo=UTC),
@@ -139,3 +162,26 @@ class ConflictDetail(BaseModel):
     code: Literal["schedule_conflict"] = "schedule_conflict"
     message: str
     conflicts: list[ScheduleRead]
+
+
+class HolidayHit(BaseModel):
+    """One official holiday a schedule would fall on."""
+
+    date: date
+    name: str
+
+
+class HolidayDetail(BaseModel):
+    """Body of a 409 response: the schedule falls on a public holiday."""
+
+    code: Literal["holiday_conflict"] = "holiday_conflict"
+    message: str
+    country: str
+    holidays: list[HolidayHit]
+
+
+class CountryRead(BaseModel):
+    """A country whose public holidays can be checked."""
+
+    code: str
+    name: str
