@@ -568,3 +568,112 @@ liệu mẫu của test frontend).
 6. **Ô chọn quốc gia liệt kê cả 250 mục**, chưa có tìm kiếm — cùng vấn đề với ô
    chọn múi giờ ở Round 3.
 7. Các mục tồn đọng từ Round 1–3 vẫn giữ nguyên.
+
+---
+
+## Round 5 — Support overnight scheduling
+
+**Ngày:** 2026-08-25
+**Commit:** `round 05: support overnight scheduling`
+
+### Yêu cầu
+
+Hỗ trợ lịch kéo dài qua nửa đêm (ví dụ 23:30 hôm nay → 01:00 hôm sau). Kiểm tra
+cách hệ thống đang xử lý start time, end time, ngày, timezone và conflict
+detection; điều chỉnh phần cần thiết; đảm bảo conflict detection vẫn đúng với
+lịch qua đêm.
+
+### Audit trước khi sửa
+
+Chạy 12 probe trực tiếp lên API trước khi thay đổi bất cứ thứ gì:
+
+| Trường hợp | Kết quả |
+| --- | --- |
+| 23:30 → 01:00 hôm sau | 201 |
+| Chồng phần sau nửa đêm (00:30–01:30) | 409 |
+| Chồng phần trước nửa đêm (23:00–23:45) | 409 |
+| Liền kề trước (22:00–23:30) / sau (01:00–02:00) | 201 / 201 |
+| Qua ranh giới tháng, năm | 201 |
+| Kéo dài 48 giờ | 201 |
+| Lịch đêm ở Tokyo vs cùng thời điểm ở Sài Gòn | 409 (đúng) |
+| Qua mốc DST spring-forward | 201, offset hai đầu khác nhau |
+| `end == start` | 422 |
+| Qua nửa đêm vào ngày nghỉ | 409 |
+
+**Kết luận: backend đã đúng hoàn toàn, không cần sửa dòng nào.** Lý do có tính hệ
+thống: từ Round 3 mọi thứ lưu và so sánh theo **thời điểm (UTC)**, không có chỗ
+nào suy luận theo "ngày". Validation chỉ là `end_time > start_time` (so sánh
+datetime, nên 23:30 hôm nay < 01:00 hôm sau), sắp xếp theo `start_time`, và điều
+kiện overlap `existing.start < new.end AND existing.end > new.start` không hề
+quan tâm hai đầu có cùng ngày hay không. Chuyện "qua nửa đêm" thực ra chỉ là
+chuyện hiển thị: lịch 23:30–01:00 giờ Việt Nam được lưu là `16:30–18:00` UTC —
+thậm chí không chạm nửa đêm.
+
+Audit tiếp frontend bằng một probe render thì tìm ra **hai khiếm khuyết thật**:
+
+1. **Thẻ trong danh sách gây hiểu nhầm.** Nó chỉ in `23:30 – 01:00`, không có dấu
+   hiệu nào cho biết giờ kết thúc thuộc ngày hôm sau — đọc lướt sẽ tưởng lịch kết
+   thúc trước khi bắt đầu 22 tiếng rưỡi. (Panel chi tiết thì đã hiện đủ hai ngày.)
+2. **Form không giúp tạo lịch qua đêm.** Đổi giờ bắt đầu không kéo theo giờ kết
+   thúc, nên muốn tạo lịch 23:30 → 01:00 phải tự sửa cả *ngày* kết thúc; làm theo
+   phản xạ (chỉ đổi giờ) sẽ nhận `422 end_time must be after start_time`.
+
+### Đã thay đổi
+
+Chỉ frontend — backend giữ nguyên.
+
+- `src/format.ts` — thêm `dayOffsetInZone()` (đếm số ngày lịch chênh nhau **theo
+  múi giờ đang xem**), `wallClockDeltaMinutes()` và `shiftWallClock()`. Hai hàm
+  sau tính trên chuỗi wall-clock bằng cách parse như UTC, nên chênh lệch đúng
+  bằng cái người dùng thấy trên đồng hồ, không bị múi giờ hay DST của máy chen vào.
+- `src/views.ts` — thẻ trong danh sách gắn nhãn `+1` (hoặc `+2`…) khi giờ kết
+  thúc rơi sang ngày sau, kèm tooltip ghi đủ khoảng thời gian. Trong form, đổi
+  giờ bắt đầu sẽ dời giờ kết thúc để **giữ nguyên độ dài**, nhờ đó giờ kết thúc
+  tự chuyển sang ngày hôm sau. Nếu khoảng hiện tại đang không hợp lệ
+  (kết thúc ≤ bắt đầu) thì không tự đoán, để nguyên cho người dùng sửa.
+- `src/style.css` — style cho nhãn `+1`.
+- Gợi ý dưới ô "Kết thúc" ghi rõ có thể rơi vào ngày hôm sau.
+
+Lịch qua đêm vẫn được xếp vào **ngày nó bắt đầu** (không nhân bản sang ngày hôm
+sau) — nhân bản một lịch thành hai dòng sẽ gây nhầm hơn là giúp.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **108 passed** (77 cũ + 31 test overnight) |
+| Regression timezone + conflict + holiday | `pytest tests/test_timezones.py tests/test_conflicts.py tests/test_holidays.py` | **61 passed**, không sửa gì |
+| Frontend test | `npm test` | **84 passed** (62 cũ + 22 mới) |
+| Frontend typecheck / build | `npm run typecheck`, `npm run build` | Sạch / Built OK |
+| **End-to-end thật** | UI thật trong jsdom → backend `:8001` → SQLite | **1 passed** (chi tiết bên dưới) |
+| Kiểm chứng bằng curl | 5 request | Ca đêm **201**; chồng sau nửa đêm **409**; chồng trước nửa đêm **409**; liền kề hai đầu **201/201**; SQLite lưu `16:30–18:00` UTC |
+
+31 test overnight ở backend phủ: tạo/đọc lịch qua nửa đêm, giữ đúng độ dài thực,
+qua ranh giới tháng/năm/cuối tháng 2, khoảng 48 giờ, khoảng 2 phút quanh nửa đêm,
+kết thúc đúng 00:00, `end < start` vẫn bị từ chối, thứ tự trong danh sách, sáu
+kiểu chồng lấn quanh nửa đêm, bốn kiểu không chồng lấn, hai lịch đêm liên tiếp,
+sửa lịch ban ngày thành lịch đêm, lịch đêm không tự xung đột với chính nó, lịch
+đêm ở múi giờ này là lịch ban ngày ở múi giờ khác, qua cả spring-forward
+(23:30→03:30 chỉ là 3 giờ thực) lẫn fall-back (5 giờ thực), xung đột quanh mốc
+DST, và tương tác với ngày nghỉ.
+
+Nội dung bài E2E: mở form, đặt giờ bắt đầu 23:30 → giờ kết thúc **tự nhảy sang
+ngày hôm sau** → tạo lịch 23:30–01:00 thành công, API trả đúng hai mốc
+`+07:00` → thẻ trong danh sách hiện `23:30 – 01:00` kèm nhãn `+1` và nằm dưới
+tiêu đề ngày 20/11 → panel chi tiết hiện đủ hai ngày và "1 giờ 30 phút" → tạo
+lịch 00:30–01:30 (sau nửa đêm) bị **409** nêu đúng lịch đêm → 01:00–02:00 (liền
+kề) được **201** → chuyển múi giờ xem sang Tokyo thì chính lịch đó hiện thành
+01:30–03:00 và **nhãn `+1` biến mất** vì ở Tokyo nó không còn qua nửa đêm.
+
+### Vấn đề còn tồn tại / lưu ý
+
+1. **Lịch qua đêm chỉ xuất hiện dưới ngày bắt đầu.** Người xem lịch ngày 21/11 sẽ
+   không thấy lịch đêm 20→21/11 trong nhóm ngày đó. Đây là lựa chọn có chủ ý,
+   nhưng một giao diện dạng lưới tuần/tháng sau này sẽ cần vẽ nó trải qua hai ngày.
+2. **Không giới hạn độ dài lịch.** Có thể tạo lịch dài nhiều tháng; chưa rõ đó là
+   tính năng hay lỗ hổng, nên chưa chặn.
+3. **Form chỉ dời giờ kết thúc khi đổi giờ bắt đầu**, không tự cuộn ngày khi người
+   dùng đặt giờ kết thúc sớm hơn giờ bắt đầu — trường hợp đó vẫn báo lỗi. Cố đoán
+   ý ở chiều này dễ sai hơn là giúp.
+4. Các mục tồn đọng từ Round 1–4 vẫn giữ nguyên.

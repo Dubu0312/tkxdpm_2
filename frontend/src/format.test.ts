@@ -4,6 +4,7 @@ import {
   browserTimezone,
   canonicalTimezone,
   dayKeyInZone,
+  dayOffsetInZone,
   formatDate,
   formatDuration,
   formatRange,
@@ -12,8 +13,10 @@ import {
   nowInputValue,
   offsetLabel,
   sameZone,
+  shiftWallClock,
   toApiValue,
   toInputValue,
+  wallClockDeltaMinutes,
   wallClockInZone,
 } from "./format";
 
@@ -119,5 +122,60 @@ describe("timezone lookup", () => {
     expect(sameZone(SAIGON, "Asia/Saigon")).toBe(true);
     expect(sameZone(TOKYO, TOKYO)).toBe(true);
     expect(sameZone(TOKYO, SAIGON)).toBe(false);
+  });
+});
+
+describe("schedules that run past midnight", () => {
+  const NIGHT_START = "2026-03-10T23:30:00+07:00";
+  const NIGHT_END = "2026-03-11T01:00:00+07:00";
+
+  it("reports how many local days later the end falls", () => {
+    expect(dayOffsetInZone(NIGHT_START, NIGHT_END, SAIGON)).toBe(1);
+    expect(dayOffsetInZone(START, END, TOKYO)).toBe(0);
+  });
+
+  it("counts an end at exactly midnight as the next day", () => {
+    expect(dayOffsetInZone("2026-03-10T22:00:00+07:00", "2026-03-11T00:00:00+07:00", SAIGON)).toBe(1);
+  });
+
+  it("counts several days for a longer range", () => {
+    expect(dayOffsetInZone("2026-04-01T09:00:00+07:00", "2026-04-03T09:00:00+07:00", SAIGON)).toBe(2);
+  });
+
+  it("counts across month and year boundaries", () => {
+    expect(dayOffsetInZone("2026-12-31T23:30:00+07:00", "2027-01-01T01:00:00+07:00", SAIGON)).toBe(1);
+    expect(dayOffsetInZone("2026-03-31T23:00:00+07:00", "2026-04-01T02:00:00+07:00", SAIGON)).toBe(1);
+  });
+
+  it("follows the timezone being viewed", () => {
+    // The same instants are 01:30-03:00 on one single day in Tokyo.
+    expect(dayOffsetInZone(NIGHT_START, NIGHT_END, TOKYO)).toBe(0);
+    // ...and still span two days when read in New York.
+    expect(dayOffsetInZone(NIGHT_START, NIGHT_END, NEW_YORK)).toBe(0);
+    expect(dayOffsetInZone("2026-03-10T09:00:00+07:00", "2026-03-10T14:00:00+07:00", NEW_YORK)).toBe(1);
+  });
+
+  it("keeps the real duration and shows both dates", () => {
+    expect(formatDuration(NIGHT_START, NIGHT_END)).toBe("1 giờ 30 phút");
+    expect(formatRange(NIGHT_START, NIGHT_END, SAIGON).match(/2026/g)).toHaveLength(2);
+  });
+});
+
+describe("wall-clock arithmetic for the form", () => {
+  it("measures the gap the user sees on the clock", () => {
+    expect(wallClockDeltaMinutes("2026-03-10T09:00", "2026-03-10T10:30")).toBe(90);
+    expect(wallClockDeltaMinutes("2026-03-10T23:30", "2026-03-11T01:00")).toBe(90);
+    expect(wallClockDeltaMinutes("2026-03-10T10:00", "2026-03-10T09:00")).toBe(-60);
+  });
+
+  it("rolls the date over when shifting past midnight", () => {
+    expect(shiftWallClock("2026-03-10T23:30", 90)).toBe("2026-03-11T01:00");
+    expect(shiftWallClock("2026-12-31T23:00", 120)).toBe("2027-01-01T01:00");
+    expect(shiftWallClock("2026-03-10T09:00", 60)).toBe("2026-03-10T10:00");
+  });
+
+  it("is unaffected by the machine's own timezone or DST", () => {
+    // Parsed as UTC on purpose: a DST night in the local zone must not shift it.
+    expect(shiftWallClock("2026-03-08T01:30", 60)).toBe("2026-03-08T02:30");
   });
 });

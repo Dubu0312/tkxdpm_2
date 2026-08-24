@@ -405,3 +405,139 @@ describe("renderError for holidays", () => {
     expect(node.querySelector("b")).toBeNull();
   });
 });
+
+describe("schedules that run past midnight", () => {
+  const overnight = (overrides = {}) =>
+    schedule({
+      title: "Ca đêm",
+      timezone: SAIGON,
+      start_time: "2026-03-10T23:30:00+07:00",
+      end_time: "2026-03-11T01:00:00+07:00",
+      location: null,
+      ...overrides,
+    });
+
+  it("marks the card so the end time does not read as earlier than the start", () => {
+    const list = renderList([overnight()], null, () => {}, SAIGON);
+    const time = list.querySelector(".card__time")!;
+    expect(time.textContent).toContain("23:30 – 01:00");
+
+    const marker = time.querySelector(".card__next-day")!;
+    expect(marker.textContent).toBe("+1");
+    expect(marker.getAttribute("title")).toContain("1 ngày");
+  });
+
+  it("spells out the full range in the card tooltip", () => {
+    const list = renderList([overnight()], null, () => {}, SAIGON);
+    const title = list.querySelector<HTMLButtonElement>(".card")!.title;
+    expect(title.match(/2026/g)).toHaveLength(2);
+    expect(title).toContain("23:30");
+    expect(title).toContain("01:00");
+  });
+
+  it("leaves a same-day schedule unmarked", () => {
+    const list = renderList([schedule()], null, () => {}, TOKYO);
+    expect(list.querySelector(".card__next-day")).toBeNull();
+  });
+
+  it("counts the days in the view timezone, not the schedule's", () => {
+    // The same instants are 01:30-03:00 on a single day in Tokyo.
+    const inTokyo = renderList([overnight()], null, () => {}, TOKYO);
+    expect(inTokyo.querySelector(".card__next-day")).toBeNull();
+    expect(inTokyo.querySelector(".card__time")?.textContent?.trim()).toBe("01:30 – 03:00");
+
+    const inSaigon = renderList([overnight()], null, () => {}, SAIGON);
+    expect(inSaigon.querySelector(".card__next-day")?.textContent).toBe("+1");
+  });
+
+  it("marks a multi-day range with the number of days", () => {
+    const long = overnight({
+      start_time: "2026-04-01T09:00:00+07:00",
+      end_time: "2026-04-03T09:00:00+07:00",
+    });
+    expect(renderList([long], null, () => {}, SAIGON).querySelector(".card__next-day")?.textContent).toBe(
+      "+2",
+    );
+  });
+
+  it("groups the schedule under the day it starts", () => {
+    const list = renderList([overnight()], null, () => {}, SAIGON);
+    expect([...list.querySelectorAll(".day")]).toHaveLength(1);
+    expect(list.querySelector(".day")?.textContent).toContain("10/03/2026");
+  });
+
+  it("shows both dates and the real duration in the detail panel", () => {
+    const panel = renderDetail(overnight(), { onEdit: () => {}, onDelete: () => {} }, SAIGON);
+    expect(panel.querySelector(".panel__when")?.textContent?.match(/2026/g)).toHaveLength(2);
+    expect(panel.querySelector(".panel__duration")?.textContent).toContain("1 giờ 30 phút");
+  });
+
+  it("prefills the edit form with both wall-clock values", () => {
+    const form = renderForm(overnight(), { onSubmit: () => {}, onCancel: () => {} }, null, SAIGON, []);
+    const inputs = form.querySelectorAll<HTMLInputElement>("input");
+    expect(inputs[1]!.value).toBe("2026-03-10T23:30");
+    expect(inputs[2]!.value).toBe("2026-03-11T01:00");
+  });
+});
+
+describe("the form keeps the duration when the start moves", () => {
+  function freshForm() {
+    const form = renderForm(
+      schedule({ start_time: "2026-03-10T09:00:00+07:00", end_time: "2026-03-10T10:00:00+07:00" }),
+      { onSubmit: () => {}, onCancel: () => {} },
+      null,
+      SAIGON,
+      [],
+    );
+    const inputs = form.querySelectorAll<HTMLInputElement>("input");
+    return { form, start: inputs[1]!, end: inputs[2]! };
+  }
+
+  it("rolls the end into the next day for a late start", () => {
+    const { start, end } = freshForm();
+    start.value = "2026-03-10T23:30";
+    start.dispatchEvent(new Event("change"));
+    expect(end.value).toBe("2026-03-11T00:30"); // the 1 hour length is kept
+  });
+
+  it("keeps a longer duration intact", () => {
+    const { start, end } = freshForm();
+    end.value = "2026-03-10T12:00"; // three hours long
+    start.value = "2026-03-10T22:00";
+    start.dispatchEvent(new Event("change"));
+    expect(end.value).toBe("2026-03-11T01:00");
+  });
+
+  it("moves the end back too when the start moves earlier", () => {
+    const { start, end } = freshForm();
+    start.value = "2026-03-09T08:00";
+    start.dispatchEvent(new Event("change"));
+    expect(end.value).toBe("2026-03-09T09:00");
+  });
+
+  it("leaves an already invalid range alone instead of guessing", () => {
+    const { start, end } = freshForm();
+    end.value = "2026-03-10T08:00"; // end before start: the user is mid-edit
+    start.value = "2026-03-10T23:30";
+    start.dispatchEvent(new Event("change"));
+    expect(end.value).toBe("2026-03-10T08:00");
+  });
+
+  it("submits the rolled-over end", () => {
+    const onSubmit = vi.fn();
+    const form = renderForm(
+      schedule({ start_time: "2026-03-10T09:00:00+07:00", end_time: "2026-03-10T10:00:00+07:00" }),
+      { onSubmit, onCancel: () => {} },
+      null,
+      SAIGON,
+      [],
+    );
+    const start = form.querySelectorAll<HTMLInputElement>("input")[1]!;
+    start.value = "2026-03-10T23:30";
+    start.dispatchEvent(new Event("change"));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    expect(onSubmit.mock.calls[0]![0].start_time).toBe("2026-03-10T23:30");
+    expect(onSubmit.mock.calls[0]![0].end_time).toBe("2026-03-11T00:30");
+  });
+});

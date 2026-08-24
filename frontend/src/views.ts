@@ -1,5 +1,6 @@
 import {
   dayKeyInZone,
+  dayOffsetInZone,
   formatDate,
   formatDay,
   formatDuration,
@@ -9,7 +10,9 @@ import {
   nowInputValue,
   offsetLabel,
   sameZone,
+  shiftWallClock,
   toInputValue,
+  wallClockDeltaMinutes,
 } from "./format";
 import type { Country, Schedule, ScheduleInput } from "./types";
 
@@ -63,14 +66,22 @@ export function renderList(
       if (schedule.id === selectedId) card.classList.add("card--active");
       card.setAttribute("aria-current", schedule.id === selectedId ? "true" : "false");
 
-      card.append(
-        el(
-          "span",
-          "card__time",
-          `${formatTime(schedule.start_time, viewTimezone)} – ` +
-            `${formatTime(schedule.end_time, viewTimezone)}`,
-        ),
+      const time = el(
+        "span",
+        "card__time",
+        `${formatTime(schedule.start_time, viewTimezone)} – ` +
+          `${formatTime(schedule.end_time, viewTimezone)}`,
       );
+      // A schedule running past midnight would otherwise read as ending hours
+      // before it starts, so say how many days later the end time is.
+      const dayOffset = dayOffsetInZone(schedule.start_time, schedule.end_time, viewTimezone);
+      if (dayOffset > 0) {
+        const marker = el("span", "card__next-day", `+${dayOffset}`);
+        marker.title = `Kết thúc sau ${dayOffset} ngày`;
+        time.append(" ", marker);
+      }
+      card.append(time);
+      card.title = formatRange(schedule.start_time, schedule.end_time, viewTimezone);
       card.append(el("span", "card__title", schedule.title));
 
       const meta = [
@@ -272,7 +283,7 @@ export function renderForm(
     field("Tiêu đề *", title),
     field("Múi giờ *", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này."),
     field("Bắt đầu *", start),
-    field("Kết thúc *", end, "Phải sau thời gian bắt đầu."),
+    field("Kết thúc *", end, "Phải sau thời gian bắt đầu; có thể rơi vào ngày hôm sau."),
     field("Quốc gia", country, "Không thể đặt lịch vào ngày nghỉ chính thức của quốc gia này."),
     field("Địa điểm", location),
     field("Mô tả", description),
@@ -286,6 +297,17 @@ export function renderForm(
   cancel.addEventListener("click", handlers.onCancel);
   actions.append(submit, cancel);
   form.append(actions);
+
+  // Moving the start keeps the length of the schedule, which rolls the end into
+  // the next day on its own when the start is late in the evening.
+  let previousStart = start.value;
+  start.addEventListener("change", () => {
+    const minutes = wallClockDeltaMinutes(previousStart, end.value);
+    if (start.value && minutes > 0) {
+      end.value = shiftWallClock(start.value, minutes);
+    }
+    previousStart = start.value;
+  });
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();

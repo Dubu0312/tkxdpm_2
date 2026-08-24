@@ -226,6 +226,22 @@ curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/j
 # -> 409 Conflict (Lunar New Year)
 ```
 
+### Lịch qua nửa đêm
+
+Lịch bắt đầu 23:30 và kết thúc 01:00 hôm sau là hợp lệ — không có ràng buộc nào
+theo ngày, chỉ có `end_time` phải sau `start_time`. Vì mọi thứ so sánh theo thời
+điểm (UTC) chứ không theo ngày, phát hiện xung đột hoạt động bình thường ở cả hai
+phía nửa đêm, và một lịch dài nhiều ngày cũng chỉ là một khoảng dài hơn.
+
+"Qua nửa đêm" là **thuộc tính hiển thị, không phải thuộc tính lưu trữ**: lịch
+23:30–01:00 giờ Việt Nam được lưu là `16:30–18:00` UTC, thậm chí không chạm nửa
+đêm; còn khi xem ở `Asia/Tokyo` thì nó hiện thành 01:30–03:00 trong cùng một ngày.
+Vì vậy frontend đánh dấu `+1` trên thẻ trong danh sách theo **múi giờ đang xem**,
+và lịch được xếp vào ngày mà nó *bắt đầu*.
+
+Trong form, đổi giờ bắt đầu sẽ dời giờ kết thúc theo để giữ nguyên độ dài — đặt
+giờ bắt đầu 23:30 thì giờ kết thúc tự chuyển sang ngày hôm sau.
+
 ### Xung đột thời gian
 
 `POST` và `PUT` từ chối lịch có khung giờ chồng lấn lịch đã tồn tại và trả về

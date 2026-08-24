@@ -112,6 +112,37 @@ export function toInputValue(iso: string): string {
   return iso.slice(0, 16);
 }
 
+/**
+ * Whole calendar days between the two instants as seen from `timeZone`.
+ *
+ * 0 for a schedule that starts and ends on the same local day, 1 for one that
+ * runs past midnight, and more for a longer range. Because it compares local
+ * days, the answer follows the timezone being viewed.
+ */
+export function dayOffsetInZone(startIso: string, endIso: string, timeZone: string): number {
+  const start = dayKeyInZone(startIso, timeZone);
+  const end = dayKeyInZone(endIso, timeZone);
+  if (start === end) return 0;
+  const days = (key: string) => Date.parse(`${key}T00:00:00Z`) / 86400000;
+  return Math.round(days(end) - days(start));
+}
+
+/**
+ * Minutes from one datetime-local value to another.
+ *
+ * Both are wall-clock strings, so they are parsed as UTC: the result is the
+ * difference the user sees on the clock, with no timezone or DST rules mixed in.
+ */
+export function wallClockDeltaMinutes(from: string, to: string): number {
+  return (Date.parse(`${to}:00Z`) - Date.parse(`${from}:00Z`)) / 60000;
+}
+
+/** Move a datetime-local value by whole minutes, rolling the date as needed. */
+export function shiftWallClock(value: string, deltaMinutes: number): string {
+  const shifted = new Date(Date.parse(`${value}:00Z`) + deltaMinutes * 60000);
+  return shifted.toISOString().slice(0, 16);
+}
+
 /** "2026-09-01T09:00" -> "2026-09-01T09:00:00" (payload for the API). */
 export function toApiValue(inputValue: string): string {
   return inputValue.length === 16 ? `${inputValue}:00` : inputValue;
