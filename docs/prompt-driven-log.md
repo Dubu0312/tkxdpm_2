@@ -1466,3 +1466,183 @@ server `python run.py` của bạn đang chạy trên cổng 8001 với dữ li�
 dữ liệu đó không khôi phục được. Các bước kiểm tra sau đó chuyển hẳn sang một
 database tạm và cổng 8002, và server của bạn không bị dừng. Server đó vẫn đang chạy
 **code cũ**, cần khởi động lại để nhận hai bản sửa này.
+
+---
+
+## Round 12 — Fix timezone and DST consistency
+
+**Ngày:** 2026-08-25
+**Commit:** `round 12: fix timezone and DST consistency`
+
+Ba lỗi liên quan tới múi giờ, do người dùng báo. Cả ba đều là cùng một nguyên
+nhân sâu hơn: **danh tính của một múi giờ và cách quy đổi thời gian chưa có một
+chỗ duy nhất để quyết định**. Vì vậy round này gom cả hai việc đó vào module mới
+`backend/app/timezones.py` thay vì vá riêng từng chỗ.
+
+---
+
+### BUG-05 — Giờ không tồn tại do DST bị đổi âm thầm
+
+**Hiện tượng.** `2026-03-08 02:30` ở `America/New_York` không tồn tại (đồng hồ
+nhảy thẳng 02:00 → 03:00), nhưng API vẫn nhận và lưu thành 03:30.
+
+**Tái hiện trước khi sửa:**
+
+```
+2026-03-08T01:30 -> UTC 06:30 -> đọc lại 01:30-05:00   khớp
+2026-03-08T02:30 -> UTC 07:30 -> đọc lại 03:30-04:00   KHÔNG khớp
+```
+
+**Nguyên nhân.** `to_utc()` gọi `value.replace(tzinfo=tz)`. Theo PEP 495, với
+một giờ nằm trong khoảng bị nhảy, `fold=0` dùng offset *trước* mốc đổi, nên
+02:30 EST = 07:30Z — mà 07:30Z ở New York lại là 03:30 EDT. Python không báo lỗi,
+nó chỉ trả về một thời điểm khác. Hệ quả: lịch bắt đầu muộn hơn người dùng nhập
+một tiếng, và thời lượng cũng lệch một tiếng — sai cả hai thứ quan trọng nhất
+của một lịch hẹn.
+
+**Cách sửa.** `app/timezones.to_utc()` kiểm tra bằng chính định nghĩa của
+"tồn tại": một giờ wall-clock tồn tại khi đổi sang UTC rồi đổi ngược lại thì ra
+đúng nó. Nếu không, ném `NonexistentLocalTime`.
+
+```python
+def _skipped(value, tz):
+    landed = value.replace(tzinfo=tz).astimezone(UTC).astimezone(tz).replace(tzinfo=None)
+    return None if landed == value else landed
+```
+
+Phép thử này chọn đúng thứ cần chọn: giờ **lặp lại** (khi đồng hồ vặn chậm) vẫn
+round-trip được nên không bị chặn oan, còn giá trị `landed` chính là gợi ý cần
+đưa cho người dùng.
+
+**Vì sao từ chối chứ không tự chọn hộ.** Người dùng gõ 02:30 có thể muốn "trước
+khi đổi giờ" hoặc "sau khi đổi giờ" — hai thời điểm cách nhau một tiếng và không
+có cách nào đoán đúng. Tự dời là im lặng làm sai; hỏi lại là để người dùng quyết.
+
+**Thông báo lỗi.** Ném `PydanticCustomError("nonexistent_local_time", …)` kèm
+`ctx` có `timezone`, `local_time`, `gap_minutes`, `next_valid`. Đây là error có
+mã máy đọc được như `schedule_conflict` / `holiday_conflict` / `duration_out_of_range`,
+nên frontend giải thích bằng lời của nó thay vì lặp lại câu tiếng Anh:
+
+> Giờ bắt đầu bạn chọn không tồn tại ở America/New_York: 02:30 ngày CN, 08/03/2026.
+> Hôm đó đồng hồ ở múi giờ này được vặn nhanh 1 giờ để đổi sang giờ mùa hè (DST),
+> nên quãng thời gian đó bị bỏ qua. Hãy chọn một giờ trước lúc đổi, hoặc từ
+> 03:30 ngày CN, 08/03/2026 trở đi.
+
+**Giờ lặp lại (chiều ngược lại).** Được hiểu là **lần xuất hiện đầu tiên** —
+đúng thứ tự người ta nhìn thấy khi cuộn qua ngày hôm đó trên lịch — và offset
+trong response nói rõ đã chọn lần nào. Không đổi hành vi, chỉ ghi lại thành quy
+ước có chủ đích.
+
+---
+
+### BUG-06 — `Asia/Saigon` và `Asia/Ho_Chi_Minh` không nhất quán
+
+**Hiện tượng.** Backend mặc định `Asia/Ho_Chi_Minh`, trình duyệt báo
+`Asia/Saigon`. Lịch được lưu theo tên nào tùy nơi tạo ra nó.
+
+**Nguyên nhân.** Không phải một bên sai — hai bên dùng **hai nguồn "tên chuẩn"
+khác nhau**. Đo trực tiếp trên máy này:
+
+```
+Intl.DateTimeFormat().resolvedOptions().timeZone      -> Asia/Saigon
+canonicalTimezone("Asia/Ho_Chi_Minh")  (ICU)          -> Asia/Saigon
+ZoneInfo / IANA                                        -> Asia/Ho_Chi_Minh
+```
+
+`frontend/src/format.ts` trước đây hỏi ICU để so sánh, còn backend lưu tên client
+gửi lên. Nên `sameZone()` vẫn *so sánh* đúng, nhưng **chuỗi lưu trong database**
+thì không đồng nhất — đúng như báo cáo.
+
+**Cách sửa.** Chọn một nguồn duy nhất: **backend**, vì backend là nơi ghi dữ liệu.
+
+* `app/timezones.RENAMED_ZONES` — bảng tên cũ → tên chuẩn, dạng dữ liệu thuần.
+* `ScheduleInput._known_timezone` trả về `canonical(value)`, nên tạo/sửa bằng
+  tên nào cũng lưu ra cùng một tên.
+* `Settings.default_timezone` cũng được chuẩn hóa, để cấu hình không tự tạo ra
+  một tên thứ hai.
+* `GET /api/config` trả bảng đó (`timezone_aliases`); frontend `setTimezoneAliases()`
+  dùng chính bảng ấy và **bỏ hẳn** cách hỏi ICU. Một bảng, hai bên đọc chung —
+  giữ bản sao thứ hai trong TypeScript chính là cách lỗi này quay lại.
+
+**Chọn lọc bảng, không lấy hết link IANA.** Đo trên máy này có 30 tên mà ICU coi
+là chuẩn nhưng IANA coi là link. Chỉ 19 trong số đó là **đổi tên cùng một nơi**
+(`Asia/Calcutta` → `Asia/Kolkata`, `Europe/Kiev` → `Europe/Kyiv`,
+`America/Jujuy` → `America/Argentina/Jujuy`, …). Số còn lại là link *gộp hai nơi
+khác nhau* trùng luật giờ — `Europe/Vatican` → `Europe/Rome`,
+`Arctic/Longyearbyen` → `Europe/Oslo`. Đưa nhóm sau vào bảng sẽ viết lại lịch của
+người dùng ở Vatican thành Rome: đó là sửa dữ liệu họ đã nhập, không phải sửa
+chính tả. Tiêu chí này được ghi ngay trong docstring của bảng để lần mở rộng sau
+không lẫn.
+
+**Dữ liệu cũ.** Bản ghi cũ vẫn đọc và hiển thị bình thường (không viết lại lén
+lúc đọc), và `migrate.py` có thêm bước `_canonicalise_timezones()` để đổi tên
+khi người dùng muốn — chỉ đổi nhãn, không dịch chuyển thời điểm nào.
+
+**Frontend.** `listTimezones()` nay ánh xạ danh sách qua `canonicalTimezone` rồi
+khử trùng lặp, nên ô chọn hiện `Asia/Ho_Chi_Minh` chứ không hiện `Asia/Saigon` —
+nếu không, người dùng chọn một tên rồi thấy lịch trả về tên khác.
+`main.ts` tách ra `bootstrap()`: nạp `/api/config` **trước**, rồi mới dựng ô chọn
+múi giờ, để giao diện không có khoảnh khắc nào gọi một vùng bằng hai tên.
+
+---
+
+### BUG-07 — `notified_at` không cùng quy ước với các datetime khác
+
+**Hiện tượng.** `start_time`, `end_time`, `notify_at` trả về theo múi giờ của
+lịch; `notified_at`, `google_synced_at`, `created_at`, `updated_at` trả về UTC.
+
+**Nguyên nhân.** Quy ước cũ chia datetime thành hai nhóm: "giờ người dùng nhập"
+và "dấu thời gian hệ thống". Cách chia đó có lý khi viết ra, nhưng người đọc API
+không nhìn thấy nó — và hai trường cạnh nhau, tên chỉ khác một chữ (`notify_at`
+"sẽ gửi lúc" / `notified_at` "đã gửi lúc"), lại hiển thị theo hai đồng hồ khác
+nhau. Không sai instant, nhưng đọc là hiểu nhầm.
+
+**Cách sửa.** Bỏ ngoại lệ: **mọi datetime của một lịch đều dựng theo múi giờ của
+chính lịch đó**. Một câu, không có "trừ". `ScheduleRead.from_model` và
+`NotificationRead.from_model` dùng `from_utc(..., tz)` cho tất cả các trường.
+
+**Vì sao chọn hướng này thay vì đưa tất cả về UTC.** Cả hai đều nhất quán, nhưng
+hướng này giữ được điều có ích: đọc "đã gửi lúc 12:38" ngay cạnh "lịch bắt đầu
+12:43" là so sánh được ngay, không phải tự cộng offset trong đầu. Instant không
+đổi và offset luôn tường minh, nên client nào chỉ quan tâm instant vẫn không bị
+ảnh hưởng.
+
+**Đây là thay đổi hành vi có chủ ý**, nên hai test cũ ghi lại quy ước cũ đã được
+viết lại chứ không phải sửa cho qua:
+`test_schedules.py::test_create_returns_full_record` và
+`test_timezones.py::test_timestamps_are_reported_in_utc` (đổi tên thành
+`test_timestamps_use_the_schedule_timezone_like_every_other_datetime`). Cả hai
+vẫn kiểm tra đúng instant như trước.
+
+---
+
+### Test đã chạy
+
+| Kiểm tra | Kết quả |
+| --- | --- |
+| `pytest` (backend, toàn bộ) | **304 passed** (261 cũ + 43 mới) |
+| `tests/test_dst.py` (mới) | 16 test — giờ không tồn tại, giờ lặp lại, lịch xuyên DST, thời lượng và xung đột qua mốc đổi giờ |
+| `tests/test_timezone_naming.py` (mới) | 17 test — bảng đổi tên, tạo/sửa bằng tên cũ, `/api/config`, migrate |
+| `tests/test_datetime_convention.py` (mới) | 10 test — mọi datetime của một lịch dùng chung một offset |
+| Kiểm chứng test bắt được lỗi | tạm gỡ bản sửa (`git stash`): **20/43** test mới fail |
+| `ruff check backend` | sạch |
+| `tsc --noEmit`, `vitest`, `npm run build` | sạch — **149 passed** (142 cũ + 7 mới), build OK |
+| API thật (cổng 8002, DB tạm) | 02:30 New York → **422** `nonexistent_local_time`; 23:00→04:00 xuyên DST → **201**, lưu `04:00Z–08:00Z`; tạo bằng `Asia/Saigon` → lưu và trả về `Asia/Ho_Chi_Minh`; sau khi dispatch, cả 6 datetime của lịch Tokyo đều `+09:00` |
+| Frontend chạy thật với backend thật (jsdom, tạm) | runtime báo `Asia/Saigon` nhưng ô chọn hiện `Asia/Ho_Chi_Minh`; lịch lưu tên chuẩn không còn bị đánh dấu "khác múi giờ"; lỗi DST hiện đúng câu tiếng Việt kèm gợi ý |
+
+**Một lỗi phát hiện nhờ chạy thật.** Lần chạy jsdom đầu tiên vẫn cho ô chọn là
+`Asia/Saigon`. Nguyên nhân không nằm ở code mà ở chỗ `VITE_API_BASE_URL` chưa
+được đặt, nên frontend đang gọi sang server cũ ở cổng 8001 (server đang chạy của
+người dùng, chưa nạp code mới) — server đó chưa trả `timezone_aliases`. Cũng vì
+vậy `setTimezoneAliases()` được viết để chấp nhận `undefined`: gặp backend cũ thì
+lùi về gọi tên nguyên văn thay vì hỏng cả trang.
+
+### Còn tồn tại
+
+* Bảng `RENAMED_ZONES` chỉ có 19 cặp đổi tên đã đo được trên môi trường này. Một
+  runtime khác báo về một tên cũ ngoài bảng thì tên đó được giữ nguyên — vẫn
+  chạy đúng, chỉ là chưa gộp về một tên. Mở rộng bằng cách thêm cặp vào bảng.
+* Giờ lặp lại khi đồng hồ vặn chậm luôn được hiểu là lần đầu; chưa có cách để
+  người dùng chọn lần thứ hai. Cần thì phải thêm vào API (ví dụ cờ `fold`).
+* `location` / `description` vẫn chưa được trim ở backend (đã ghi ở Round 11,
+  ngoài phạm vi round này).

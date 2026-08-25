@@ -7,6 +7,9 @@ database is a no-op:
    datetimes and have no ``timezone`` column. The column is added and the stored
    instants are rewritten as UTC.
 2. **Holiday validation** (Round 4): adds the nullable ``country`` column.
+3. **Timezone naming** (Round 12): rewrites stored zone names that have since
+   been renamed (``Asia/Saigon`` -> ``Asia/Ho_Chi_Minh``), so old rows are
+   spelled the way new ones are.
 
     python migrate.py [--timezone Asia/Ho_Chi_Minh]
 
@@ -23,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import inspect, text
 
+from app import timezones
 from app.config import settings
 from app.db import engine
 
@@ -92,6 +96,31 @@ def _add_google_columns() -> None:
     print("Added the Google Calendar columns (existing schedules are unlinked).")
 
 
+def _canonicalise_timezones() -> int:
+    """Rewrite stored zone names the API now spells differently.
+
+    Rows written before the spelling was settled can say ``Asia/Saigon`` where a
+    row written today says ``Asia/Ho_Chi_Minh``. It is the same zone, so no
+    instant moves — but the name is what the interface compares by when it
+    decides whether a schedule is "in another timezone", so one zone under two
+    names shows up as two.
+    """
+    with engine.begin() as conn:
+        stored = conn.execute(text("SELECT DISTINCT timezone FROM schedules")).scalars().all()
+        renames = {name: timezones.canonical(name) for name in stored}
+        rewritten = 0
+        for old, new in renames.items():
+            if old == new:
+                continue
+            result = conn.execute(
+                text("UPDATE schedules SET timezone = :new WHERE timezone = :old"),
+                {"new": new, "old": old},
+            )
+            rewritten += result.rowcount
+            print(f"Renamed timezone {old} -> {new} on {result.rowcount} schedule(s).")
+    return rewritten
+
+
 def _create_missing_indexes() -> None:
     """Add indexes a migrated database would otherwise never get.
 
@@ -125,6 +154,9 @@ def migrate(timezone_name: str) -> int:
         applied = True
     if "google_event_id" not in columns:
         _add_google_columns()
+        applied = True
+
+    if _canonicalise_timezones():
         applied = True
 
     indexes_before = _index_names()

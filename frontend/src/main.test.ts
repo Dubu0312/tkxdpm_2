@@ -26,7 +26,12 @@ function workingBackend(schedules: unknown[] = []) {
     if (url.includes("/api/config/google"))
       return json({ mode: "disabled", enabled: false, calendar_id: "primary", detail: "off" });
     if (url.includes("/api/config"))
-      return json({ min_duration_minutes: 15, max_duration_minutes: 10080, default_timezone: "UTC" });
+      return json({
+        min_duration_minutes: 15,
+        max_duration_minutes: 10080,
+        default_timezone: "UTC",
+        timezone_aliases: {},
+      });
     return json(schedules);
   });
 }
@@ -90,7 +95,7 @@ describe("the normal startup path still works", () => {
       location: null,
       start_time: "2026-09-01T09:00:00+07:00",
       end_time: "2026-09-01T10:00:00+07:00",
-      timezone: "Asia/Saigon",
+      timezone: "Asia/Ho_Chi_Minh",
       country: null,
       reminder_minutes: null,
       notify_at: null,
@@ -152,7 +157,7 @@ describe("feedback on the main flows", () => {
     location: null,
     start_time: "2026-09-01T09:00:00+07:00",
     end_time: "2026-09-01T10:00:00+07:00",
-    timezone: "Asia/Saigon",
+    timezone: "Asia/Ho_Chi_Minh",
     country: null,
     reminder_minutes: null,
     notify_at: null,
@@ -175,7 +180,12 @@ describe("feedback on the main flows", () => {
       if (url.includes("/api/config/google"))
         return json({ mode: "memory", enabled: true, calendar_id: "primary", detail: null });
       if (url.includes("/api/config"))
-        return json({ min_duration_minutes: 15, max_duration_minutes: 10080, default_timezone: "Asia/Saigon" });
+        return json({
+          min_duration_minutes: 15,
+          max_duration_minutes: 10080,
+          default_timezone: "Asia/Ho_Chi_Minh",
+          timezone_aliases: { "Asia/Saigon": "Asia/Ho_Chi_Minh" },
+        });
       if (init?.method === "DELETE") {
         state.schedules = [];
         return Promise.resolve(new Response(null, { status: 204 }));

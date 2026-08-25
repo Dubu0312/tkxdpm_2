@@ -24,36 +24,54 @@ const FALLBACK_ZONES = [
   "Australia/Sydney",
 ];
 
-/** The viewer's own timezone, e.g. "Asia/Ho_Chi_Minh". */
-export function browserTimezone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+let aliases: Record<string, string> = {};
+
+/**
+ * Teach this module which zone names are older spellings of which.
+ *
+ * The table is served by `GET /api/config`. It has to come from there: the
+ * backend decides what a zone is called when it saves a schedule, and a second
+ * copy of the list here would be one more thing that can disagree with it —
+ * which is the bug this replaced. The runtime's own idea of a canonical name is
+ * deliberately not used, because it is not the same idea: this browser calls
+ * the zone `Asia/Saigon` where the API calls it `Asia/Ho_Chi_Minh`.
+ *
+ * Until the table arrives every name is taken at face value.
+ */
+export function setTimezoneAliases(table: Record<string, string> | undefined): void {
+  aliases = table ?? {};
 }
 
 /**
- * Every IANA zone the runtime knows about, with a small fallback list.
+ * The name the API stores this zone under, or the input when it has only one.
+ * An unknown name comes back unchanged rather than throwing.
+ */
+export function canonicalTimezone(name: string): string {
+  return aliases[name] ?? name;
+}
+
+/** The viewer's own timezone, named the way the API names it. */
+export function browserTimezone(): string {
+  return canonicalTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+}
+
+/**
+ * Every IANA zone the runtime knows about, named the way the API names them.
  *
- * `supportedValuesOf` reports canonical ids only, so aliases (`Asia/Ho_Chi_Minh`
- * for `Asia/Saigon`) and plain `UTC` are missing from it even though both are
- * accepted everywhere — `UTC` is added back here, aliases are handled by
- * `sameZone` / `timezoneSelect`.
+ * The runtime lists each zone under one id, but not always the id this app
+ * stores, so the list is mapped through `canonicalTimezone` and de-duplicated —
+ * otherwise the picker would offer `Asia/Saigon` for a schedule the API reports
+ * as `Asia/Ho_Chi_Minh` and the two would look like different places. Plain
+ * `UTC` is missing from `supportedValuesOf` even though every runtime accepts
+ * it, so it is put back at the front where it is easy to find.
  */
 export function listTimezones(): string[] {
   const supported = (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
-  const zones = supported ? supported.call(Intl, "timeZone") : FALLBACK_ZONES;
-  if (zones.length === 0) return FALLBACK_ZONES;
-  return zones.includes("UTC") ? zones : ["UTC", ...zones];
-}
-
-/**
- * The runtime's canonical id for a zone, or the input if it is not a valid zone.
- * Used for comparison only — what the user picked is what gets stored.
- */
-export function canonicalTimezone(name: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, { timeZone: name }).resolvedOptions().timeZone;
-  } catch {
-    return name;
-  }
+  const listed = supported ? supported.call(Intl, "timeZone") : FALLBACK_ZONES;
+  const zones = listed.length === 0 ? FALLBACK_ZONES : listed;
+  const named = [...new Set(zones.map(canonicalTimezone))].filter((zone) => zone !== "UTC");
+  named.sort();
+  return ["UTC", ...named];
 }
 
 /** True when two identifiers name the same zone, aliases included. */

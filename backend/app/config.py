@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app import timezones
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -29,7 +31,9 @@ class Settings(BaseSettings):
     # Frontend dev server origin, allowed through CORS.
     cors_origins: str = "http://localhost:5173"
 
-    # IANA timezone used when a request does not name one.
+    # IANA timezone used when a request does not name one. Stored under the
+    # canonical spelling, so configuring "Asia/Saigon" cannot make the default
+    # look like a different zone from the one schedules are saved with.
     default_timezone: str = "Asia/Ho_Chi_Minh"
 
     # Background reminder dispatch. Set notifications_enabled=false to turn the
@@ -63,6 +67,12 @@ class Settings(BaseSettings):
         if raw in ("", ":memory:") or raw.startswith("/"):
             return value
         return prefix + str((PROJECT_ROOT / raw).resolve())
+
+    @field_validator("default_timezone")
+    @classmethod
+    def _canonical_timezone(cls, value: str) -> str:
+        timezones.resolve(value)
+        return timezones.canonical(value)
 
     @property
     def google_credentials_path(self) -> Path:

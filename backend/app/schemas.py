@@ -7,15 +7,19 @@ Time convention
   string (``2026-09-01T09:00:00+07:00``) or a naive one
   (``2026-09-01T09:00:00``). A naive value is read as wall-clock time in the
   request's ``timezone`` field — which is exactly what a browser's
-  ``<input type="datetime-local">`` produces.
-* **Output**: instants are rendered in the schedule's own timezone, offset
-  included, so the wall-clock time the user typed is preserved verbatim;
-  ``created_at`` / ``updated_at`` are rendered in UTC.
+  ``<input type="datetime-local">`` produces. A wall-clock time that a daylight
+  saving jump skipped over is refused, not moved (see ``app.timezones``).
+* **Output**: *every* datetime belonging to a schedule is rendered in that
+  schedule's own timezone, offset always included. One rule with no exceptions:
+  the wall-clock time the user typed comes back verbatim, and the bookkeeping
+  timestamps beside it — ``notified_at``, ``google_synced_at``, ``created_at``,
+  ``updated_at`` — are read against the same clock rather than a second, silent
+  one. Each value still names an unambiguous instant, so a client that only
+  cares about the instant can ignore the zone entirely.
 """
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     BaseModel,
@@ -25,33 +29,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
-from app import holiday_calendar
+from app import holiday_calendar, timezones
 from app.config import settings
 from app.models import reminder_status
 
-
-def resolve_timezone(name: str) -> ZoneInfo:
-    """Return the IANA timezone called ``name``, or raise ValueError."""
-    try:
-        return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise ValueError(f"Unknown timezone: {name!r}") from None
-
-
-def to_utc(value: datetime, tz: ZoneInfo) -> datetime:
-    """Convert an aware or naive datetime to a naive UTC datetime.
-
-    A naive value is interpreted as wall-clock time in ``tz``.
-    """
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=tz)
-    return value.astimezone(UTC).replace(tzinfo=None)
-
-
-def from_utc(value: datetime, tz: ZoneInfo) -> datetime:
-    """Attach UTC to a stored naive datetime and convert it into ``tz``."""
-    return value.replace(tzinfo=UTC).astimezone(tz)
+# Timezone identity and conversion live in ``app.timezones``; these names keep
+# working for the callers that already import them from here.
+resolve_timezone = timezones.resolve
+to_utc = timezones.to_utc
+from_utc = timezones.from_utc
 
 
 class ScheduleFields(BaseModel):
@@ -78,14 +66,17 @@ class ScheduleFields(BaseModel):
 class ScheduleInput(ScheduleFields):
     """Incoming payload. Datetimes are normalised to UTC during validation."""
 
-    start_time: datetime
-    end_time: datetime
+    # Declared before the two datetimes on purpose: pydantic validates fields in
+    # declaration order, and a wall-clock value cannot be turned into an instant
+    # until the zone it was written in is known and valid.
     timezone: str = Field(
         default_factory=lambda: settings.default_timezone,
         min_length=1,
         max_length=64,
         description="IANA timezone name, e.g. 'Asia/Ho_Chi_Minh'",
     )
+    start_time: datetime
+    end_time: datetime
     country: str | None = Field(
         default=None,
         max_length=2,
@@ -101,8 +92,40 @@ class ScheduleInput(ScheduleFields):
     @field_validator("timezone")
     @classmethod
     def _known_timezone(cls, value: str) -> str:
-        resolve_timezone(value)
-        return value
+        """Accept any spelling of a real zone, keep the canonical one.
+
+        Clients disagree about what a zone is called — a browser reporting
+        ``Asia/Saigon`` and this app's default ``Asia/Ho_Chi_Minh`` name the
+        same place — so the spelling is settled here, once, on the way in. Every
+        schedule then stores the same name for the same zone whatever created it.
+        """
+        timezones.resolve(value)
+        return timezones.canonical(value)
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _as_utc(cls, value: datetime, info) -> datetime:
+        """Read a wall-clock value in the schedule's zone and store it as UTC."""
+        name = info.data.get("timezone")
+        if name is None:
+            # The zone itself was rejected; that error is the one worth reporting.
+            return value
+        try:
+            return timezones.to_utc(value, timezones.resolve(name), name)
+        except timezones.NonexistentLocalTime as error:
+            # A typed error rather than a bare message: the frontend can explain
+            # the daylight-saving jump in its own words instead of echoing this.
+            raise PydanticCustomError(
+                "nonexistent_local_time",
+                "{reason}",
+                {
+                    "reason": str(error),
+                    "timezone": error.timezone,
+                    "local_time": error.value.isoformat(),
+                    "gap_minutes": error.gap_minutes,
+                    "next_valid": error.shifted.isoformat(),
+                },
+            ) from None
 
     @field_validator("country")
     @classmethod
@@ -120,10 +143,9 @@ class ScheduleInput(ScheduleFields):
         return from_utc(self.start_time, tz), from_utc(self.end_time, tz)
 
     @model_validator(mode="after")
-    def _normalise(self):
-        tz = resolve_timezone(self.timezone)
-        self.start_time = to_utc(self.start_time, tz)
-        self.end_time = to_utc(self.end_time, tz)
+    def _ends_after_it_starts(self):
+        # Compared as instants, so an overnight schedule and one crossing a
+        # daylight-saving change are both judged by real elapsed time.
         if self.end_time <= self.start_time:
             raise ValueError("end_time must be after start_time")
         return self
@@ -152,9 +174,9 @@ class ScheduleRead(ScheduleFields):
     timezone: str
     country: str | None
     reminder_minutes: int | None
-    #: Instant the reminder fires, rendered in the schedule's timezone.
+    #: Instant the reminder fires; null when there is no reminder.
     notify_at: datetime | None
-    #: When the reminder was delivered (UTC); null while it is still pending.
+    #: When the reminder was delivered; null while it is still pending.
     notified_at: datetime | None
     #: What became of the reminder: none / scheduled / sent / missed.
     reminder_status: Literal["none", "scheduled", "sent", "missed"]
@@ -195,7 +217,7 @@ class ScheduleRead(ScheduleFields):
             end_time=from_utc(schedule.end_time, tz),
             notify_at=None if schedule.notify_at is None else from_utc(schedule.notify_at, tz),
             notified_at=(
-                None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
+                None if schedule.notified_at is None else from_utc(schedule.notified_at, tz)
             ),
             reminder_status=reminder_status(schedule),
             google_event_id=schedule.google_event_id,
@@ -203,11 +225,11 @@ class ScheduleRead(ScheduleFields):
             google_synced_at=(
                 None
                 if schedule.google_synced_at is None
-                else schedule.google_synced_at.replace(tzinfo=UTC)
+                else from_utc(schedule.google_synced_at, tz)
             ),
             google_out_of_date=schedule.google_out_of_date,
-            created_at=schedule.created_at.replace(tzinfo=UTC),
-            updated_at=schedule.updated_at.replace(tzinfo=UTC),
+            created_at=from_utc(schedule.created_at, tz),
+            updated_at=from_utc(schedule.updated_at, tz),
         )
 
 
@@ -253,10 +275,10 @@ class NotificationRead(BaseModel):
     title: str
     timezone: str
     reminder_minutes: int
-    #: Instant the reminder fires and the schedule starts, in its own timezone.
+    #: All three are rendered in the schedule's own timezone, like ``ScheduleRead``.
     notify_at: datetime
     start_time: datetime
-    #: When it was delivered (UTC); null while still pending.
+    #: When it was delivered; null while still pending.
     notified_at: datetime | None
 
     @field_serializer("notify_at", "start_time", "notified_at")
@@ -274,7 +296,7 @@ class NotificationRead(BaseModel):
             notify_at=from_utc(schedule.notify_at, tz),
             start_time=from_utc(schedule.start_time, tz),
             notified_at=(
-                None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
+                None if schedule.notified_at is None else from_utc(schedule.notified_at, tz)
             ),
         )
 
@@ -295,6 +317,10 @@ class LimitsRead(BaseModel):
     min_duration_minutes: int
     max_duration_minutes: int
     default_timezone: str
+    #: Old zone names mapped to the spelling this API stores, so the interface
+    #: names a zone the same way the database does without keeping its own copy
+    #: of the list (see ``app.timezones``).
+    timezone_aliases: dict[str, str]
 
 
 class GoogleStatusRead(BaseModel):

@@ -640,6 +640,16 @@ export function friendlyMessage(error: ApiError): { text: string; hint?: string 
   return { text: raw };
 }
 
+/**
+ * "02:30 ngày Chủ Nhật, 08/03/2026" from a naive "2026-03-08T02:30:00".
+ *
+ * The value has no offset on purpose — it names a wall clock that never
+ * happened, so there is no instant to format. Slicing it is the whole job.
+ */
+function wallClockWords(local: string): string {
+  return `${local.slice(11, 16)} ngày ${formatDay(local.slice(0, 10))}`;
+}
+
 /** A short confirmation of something that just succeeded. */
 export function renderToast(message: string): HTMLElement {
   return el("div", "toast", message);
@@ -704,6 +714,28 @@ export function renderError(
         "p",
         "error__hint",
         "Hãy chọn ngày khác, hoặc bỏ chọn quốc gia nếu lịch này không theo ngày nghỉ của quốc gia đó.",
+      ),
+    );
+    return box;
+  }
+
+  if (detail.kind === "nonexistentTime") {
+    const which = detail.field === "end_time" ? "Giờ kết thúc" : "Giờ bắt đầu";
+    box.append(
+      el(
+        "p",
+        "error__text",
+        `${which} bạn chọn không tồn tại ở ${detail.timezone}: ` +
+          `${wallClockWords(detail.localTime)}.`,
+      ),
+    );
+    box.append(
+      el(
+        "p",
+        "error__hint",
+        `Hôm đó đồng hồ ở múi giờ này được vặn nhanh ${formatMinutes(detail.gapMinutes)} để ` +
+          `đổi sang giờ mùa hè (DST), nên quãng thời gian đó bị bỏ qua. Hãy chọn một giờ trước ` +
+          `lúc đổi, hoặc từ ${wallClockWords(detail.nextValid)} trở đi.`,
       ),
     );
     return box;

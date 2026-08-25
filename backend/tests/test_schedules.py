@@ -34,9 +34,10 @@ def test_create_returns_full_record(client):
     assert body["start_time"] == f"{PAYLOAD['start_time']}{OFFSET}"
     assert body["end_time"] == f"{PAYLOAD['end_time']}{OFFSET}"
     assert body["timezone"] == TZ
-    # Timestamps are server-side UTC, rendered with an explicit offset.
-    assert body["created_at"].endswith("+00:00")
-    assert body["updated_at"].endswith("+00:00")
+    # Every datetime in the response is rendered in the schedule's own timezone,
+    # bookkeeping timestamps included — one convention, no exceptions.
+    assert body["created_at"].endswith(OFFSET)
+    assert body["updated_at"].endswith(OFFSET)
 
 
 def test_optional_fields_may_be_omitted(client):

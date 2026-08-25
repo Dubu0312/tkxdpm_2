@@ -189,6 +189,42 @@ describe("api client", () => {
     expect(await fetchLimits()).toEqual(limits);
   });
 
+  it("keeps the reason a daylight-saving jump gave for refusing a time", async () => {
+    const body = {
+      detail: [
+        {
+          type: "nonexistent_local_time",
+          loc: ["body", "start_time"],
+          msg: "2026-03-08T02:30:00 does not exist in America/New_York",
+          ctx: {
+            timezone: "America/New_York",
+            local_time: "2026-03-08T02:30:00",
+            gap_minutes: 60,
+            next_valid: "2026-03-08T03:30:00",
+          },
+        },
+      ],
+    };
+    mockFetch(new Response(JSON.stringify(body), { status: 422 }));
+    const error = (await createSchedule(INPUT).catch((e) => e)) as ApiError;
+    expect(error.detail).toEqual({
+      kind: "nonexistentTime",
+      field: "start_time",
+      timezone: "America/New_York",
+      localTime: "2026-03-08T02:30:00",
+      gapMinutes: 60,
+      nextValid: "2026-03-08T03:30:00",
+    });
+  });
+
+  it("falls back to the plain message when that reason has no context", async () => {
+    const body = { detail: [{ type: "nonexistent_local_time", loc: ["body"], msg: "nope" }] };
+    mockFetch(new Response(JSON.stringify(body), { status: 422 }));
+    const error = (await createSchedule(INPUT).catch((e) => e)) as ApiError;
+    expect(error.detail).toBeNull();
+    expect(error.message).toBe("nope");
+  });
+
   it("leaves the detail empty for other errors", async () => {
     mockFetch(new Response(JSON.stringify({ detail: "Schedule not found" }), { status: 404 }));
     const error = (await listSchedules().catch((err: unknown) => err)) as ApiError;

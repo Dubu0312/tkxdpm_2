@@ -156,7 +156,7 @@ Base URL: `http://127.0.0.1:8001`.
 | PUT    | `/api/schedules/{id}`  | Cập nhật toàn bộ một lịch                   |
 | DELETE | `/api/schedules/{id}`  | Xóa lịch (204)                              |
 | GET    | `/api/countries`       | Danh sách quốc gia kiểm tra được ngày nghỉ  |
-| GET    | `/api/config`          | Giới hạn thời lượng + múi giờ mặc định      |
+| GET    | `/api/config`          | Giới hạn thời lượng, múi giờ mặc định, bảng tên múi giờ |
 | GET    | `/api/config/google`   | Trạng thái tích hợp Google Calendar         |
 | POST   | `/api/schedules/{id}/google`   | Tạo/cập nhật event Google cho lịch  |
 | DELETE | `/api/schedules/{id}/google`   | Xóa event Google, giữ lại lịch      |
@@ -180,7 +180,7 @@ Quy ước xử lý thời gian:
 | --- | --- |
 | SQLite | `start_time` / `end_time` / `created_at` / `updated_at` lưu **UTC** (naive, vì SQLite không có kiểu aware); `timezone` lưu tên IANA riêng |
 | Backend | Chuyển input về UTC lúc validate, so sánh và sắp xếp bằng UTC, dựng response về múi giờ của từng lịch |
-| API | ISO-8601 kèm offset tường minh, ví dụ `2026-09-01T09:00:00+09:00`; `created_at`/`updated_at` là `+00:00` |
+| API | ISO-8601 kèm offset tường minh, ví dụ `2026-09-01T09:00:00+09:00`. **Mọi** datetime của một lịch — kể cả `notified_at`, `google_synced_at`, `created_at`, `updated_at` — đều dựng theo múi giờ của chính lịch đó |
 | Frontend | Hiển thị mọi thời điểm theo *múi giờ đang xem* bằng `Intl.DateTimeFormat`; ô nhập gửi giờ wall-clock kèm `timezone`, không tự tính offset |
 
 Input `start_time` / `end_time` chấp nhận hai dạng:
@@ -192,6 +192,31 @@ Input `start_time` / `end_time` chấp nhận hai dạng:
 
 Vì mọi so sánh diễn ra trên UTC, phát hiện xung đột hoạt động đúng giữa các múi
 giờ khác nhau và qua các mốc đổi giờ DST. Một `timezone` không hợp lệ trả về `422`.
+
+**Một múi giờ, một tên.** Cùng một vùng có thể có nhiều tên (`Asia/Saigon` và
+`Asia/Ho_Chi_Minh` là một), và các runtime không thống nhất tên nào là chuẩn —
+trình duyệt ở đây báo `Asia/Saigon`, còn IANA/Python dùng `Asia/Ho_Chi_Minh`.
+Backend quyết định tên khi nhận request (`app/timezones.py`) nên mọi lịch mới
+đều lưu cùng một tên bất kể client nào tạo. Bảng đổi tên được `GET /api/config`
+trả về (`timezone_aliases`) để frontend gọi tên giống hệt backend thay vì giữ
+một bản sao riêng. Bản ghi cũ vẫn đọc và hiển thị bình thường; `python
+migrate.py` sẽ đổi tên chúng khi bạn muốn.
+
+**Giờ không tồn tại do DST.** Khi đồng hồ vặn nhanh, những giờ nằm trong khoảng
+bị nhảy không hề tồn tại — ở `America/New_York` ngày 2026-03-08, đồng hồ đi
+thẳng từ 02:00 sang 03:00. Backend **từ chối** giá trị như vậy thay vì tự dời
+sang 03:30 (việc dời sẽ làm sai cả thời điểm lẫn thời lượng):
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/json' \
+  -d '{"title":"DST","start_time":"2026-03-08T02:30:00","end_time":"2026-03-08T04:00:00","timezone":"America/New_York"}'
+# -> 422, type "nonexistent_local_time", ctx kèm gap_minutes và next_valid
+```
+
+Chiều ngược lại (đồng hồ vặn chậm, một giờ lặp lại hai lần) được hiểu là **lần
+xuất hiện đầu tiên**; offset trong response cho biết lần nào đã được chọn. Lịch
+chạy *xuyên qua* mốc đổi giờ vẫn hợp lệ, và thời lượng được tính bằng thời gian
+thực: 01:50 → 03:00 ngày 2026-03-08 ở New York chỉ dài 10 phút, không phải 70.
 
 Ví dụ — hai lịch dưới đây xung đột dù giờ hiển thị khác nhau (cùng là 09:00 UTC):
 
@@ -469,8 +494,9 @@ python migrate.py --timezone Asia/Ho_Chi_Minh   # múi giờ các bản ghi cũ 
 Các cột được thêm qua nhiều round (`timezone`, `country`, `reminder_minutes`,
 `notified_at`, `google_event_id`, …) đều do script này bổ sung.
 
-Script này thêm các cột còn thiếu và đổi các mốc thời gian cũ (giờ địa phương)
-sang UTC. Chạy lại lần nữa là no-op. The `data/` directory is tracked but its
+Script này thêm các cột còn thiếu, đổi các mốc thời gian cũ (giờ địa phương)
+sang UTC, và đổi tên múi giờ cũ về tên chuẩn (`Asia/Saigon` → `Asia/Ho_Chi_Minh`)
+— việc đổi tên không làm dịch chuyển bất kỳ thời điểm nào. Chạy lại lần nữa là no-op. The `data/` directory is tracked but its
 `*.db` contents are ignored by Git. Point `DATABASE_URL` elsewhere in `.env` to
 use a different location or engine.
 

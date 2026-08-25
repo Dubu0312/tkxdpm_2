@@ -11,7 +11,12 @@ import {
   unlinkFromGoogle,
   updateSchedule,
 } from "./api";
-import { browserTimezone, toApiValue, wallClockDeltaMinutes } from "./format";
+import {
+  browserTimezone,
+  setTimezoneAliases,
+  toApiValue,
+  wallClockDeltaMinutes,
+} from "./format";
 import type { Country, GoogleStatus, Limits, Schedule, ScheduleInput } from "./types";
 import {
   renderDetail,
@@ -350,13 +355,36 @@ function render(): void {
 createButton.addEventListener("click", () => setView({ name: "create" }));
 
 // Changing the view timezone only re-renders: the stored instants never move.
-const timezonePicker = timezoneSelect(state.viewTimezone);
-timezonePicker.id = "view-timezone";
-timezonePicker.setAttribute("aria-label", "Múi giờ hiển thị");
-timezonePicker.addEventListener("change", () => {
-  state.viewTimezone = timezonePicker.value;
-  render();
-});
-timezoneSlot.replaceChildren(timezonePicker);
+function mountTimezonePicker(): void {
+  const picker = timezoneSelect(state.viewTimezone);
+  picker.id = "view-timezone";
+  picker.setAttribute("aria-label", "Múi giờ hiển thị");
+  picker.addEventListener("change", () => {
+    state.viewTimezone = picker.value;
+    render();
+  });
+  timezoneSlot.replaceChildren(picker);
+}
 
-void refresh();
+/**
+ * Settle how zones are named, then start.
+ *
+ * The zone picker and every "is this schedule somewhere else?" comparison work
+ * on names, and the browser does not always spell a zone the way the API does.
+ * Asking the backend first means the interface never briefly labels one zone as
+ * two. A failure here is left to `refresh()`, which makes the same call and has
+ * somewhere to show the error.
+ */
+async function bootstrap(): Promise<void> {
+  try {
+    state.limits = await fetchLimits();
+    setTimezoneAliases(state.limits.timezone_aliases);
+    state.viewTimezone = browserTimezone();
+  } catch {
+    state.limits = null;
+  }
+  mountTimezonePicker();
+  await refresh();
+}
+
+void bootstrap();

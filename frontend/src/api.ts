@@ -18,7 +18,19 @@ export interface HealthResponse {
 export type RefusalDetail =
   | { kind: "conflict"; conflicts: Schedule[] }
   | { kind: "holiday"; country: string; holidays: HolidayHit[] }
-  | { kind: "duration"; durationMinutes: number; minMinutes: number; maxMinutes: number };
+  | { kind: "duration"; durationMinutes: number; minMinutes: number; maxMinutes: number }
+  | {
+      kind: "nonexistentTime";
+      /** Which end of the schedule fell inside the jump. */
+      field: "start_time" | "end_time" | null;
+      timezone: string;
+      /** The wall-clock value that never happens, "2026-03-08T02:30:00". */
+      localTime: string;
+      /** How far the clock jumps forward, in minutes. */
+      gapMinutes: number;
+      /** The first wall-clock value that does exist again. */
+      nextValid: string;
+    };
 
 /** Error carrying the message the backend sent back. */
 export class ApiError extends Error {
@@ -35,8 +47,10 @@ export class ApiError extends Error {
 }
 
 interface ValidationItem {
+  type?: string;
   msg?: string;
   loc?: (string | number)[];
+  ctx?: Record<string, unknown>;
 }
 
 interface ConflictBody {
@@ -81,6 +95,29 @@ function isDurationBody(detail: unknown): detail is DurationBody {
   );
 }
 
+/**
+ * A wall-clock time a daylight-saving jump skipped over, if that is what failed.
+ *
+ * This one arrives as an ordinary validation item rather than a 409 body, since
+ * it is a value that cannot be read at all — but it carries the same kind of
+ * structured reason, so the interface can explain the jump in its own words.
+ */
+function nonexistentTime(items: ValidationItem[], status: number): ApiError | null {
+  const item = items.find((entry) => entry.type === "nonexistent_local_time");
+  const ctx = item?.ctx;
+  if (!ctx || typeof ctx.timezone !== "string" || typeof ctx.local_time !== "string") return null;
+
+  const field = item?.loc?.find((part) => part === "start_time" || part === "end_time");
+  return new ApiError(item?.msg ?? "", status, {
+    kind: "nonexistentTime",
+    field: (field as "start_time" | "end_time" | undefined) ?? null,
+    timezone: ctx.timezone,
+    localTime: ctx.local_time,
+    gapMinutes: typeof ctx.gap_minutes === "number" ? ctx.gap_minutes : 0,
+    nextValid: typeof ctx.next_valid === "string" ? ctx.next_valid : "",
+  });
+}
+
 /** Turns a FastAPI error body into an ApiError, keeping any conflict payload. */
 function errorFromBody(body: unknown, status: number, fallback: string): ApiError {
   const detail =
@@ -113,6 +150,9 @@ function errorFromBody(body: unknown, status: number, fallback: string): ApiErro
     return new ApiError(detail, status);
   }
   if (Array.isArray(detail)) {
+    const skipped = nonexistentTime(detail as ValidationItem[], status);
+    if (skipped) return skipped;
+
     const messages = (detail as ValidationItem[])
       .map((item) => {
         const field = item.loc?.filter((part) => part !== "body").join(".");

@@ -14,12 +14,16 @@ import {
   nowInputValue,
   offsetLabel,
   sameZone,
+  setTimezoneAliases,
   shiftWallClock,
   toApiValue,
   toInputValue,
   wallClockDeltaMinutes,
   wallClockInZone,
 } from "./format";
+
+// The naming table the backend serves at startup, seeded the way main.ts does.
+setTimezoneAliases({ "Asia/Saigon": "Asia/Ho_Chi_Minh" });
 
 const TOKYO = "Asia/Tokyo"; // +09:00
 const SAIGON = "Asia/Ho_Chi_Minh"; // +07:00
@@ -109,9 +113,11 @@ describe("timezone lookup", () => {
     expect(zones).toContain("UTC");
   });
 
-  it("resolves alias identifiers to the runtime's canonical name", () => {
-    // Asia/Ho_Chi_Minh and Asia/Saigon are the same zone under different ids.
-    expect(canonicalTimezone(SAIGON)).toBe(canonicalTimezone("Asia/Saigon"));
+  it("names a zone the way the API names it, not the way the runtime does", () => {
+    // This runtime reports the zone as Asia/Saigon; the API stores it as
+    // Asia/Ho_Chi_Minh, and the API is the one that has to be matched.
+    expect(canonicalTimezone("Asia/Saigon")).toBe(SAIGON);
+    expect(canonicalTimezone(SAIGON)).toBe(SAIGON);
     expect(canonicalTimezone(TOKYO)).toBe(TOKYO);
   });
 
@@ -123,6 +129,25 @@ describe("timezone lookup", () => {
     expect(sameZone(SAIGON, "Asia/Saigon")).toBe(true);
     expect(sameZone(TOKYO, TOKYO)).toBe(true);
     expect(sameZone(TOKYO, SAIGON)).toBe(false);
+  });
+
+  it("offers each zone once, under the name the API uses", () => {
+    const zones = listTimezones();
+    expect(zones).toContain(SAIGON);
+    expect(zones).not.toContain("Asia/Saigon");
+    expect(new Set(zones).size).toBe(zones.length);
+  });
+
+  it("reports the browser zone under the API's name too", () => {
+    // Otherwise a schedule created with the default would come back reading
+    // "another timezone" against the very picker that produced it.
+    expect(browserTimezone()).not.toBe("Asia/Saigon");
+  });
+
+  it("takes names at face value until the table has been loaded", () => {
+    setTimezoneAliases(undefined);
+    expect(canonicalTimezone("Asia/Saigon")).toBe("Asia/Saigon");
+    setTimezoneAliases({ "Asia/Saigon": SAIGON });
   });
 });
 

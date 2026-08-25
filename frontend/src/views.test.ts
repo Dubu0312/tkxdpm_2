@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Schedule } from "./types";
 import { ApiError } from "./api";
+import { setTimezoneAliases } from "./format";
 import {
   countryLabel,
   countrySelect,
@@ -20,6 +21,10 @@ import {
 
 const TOKYO = "Asia/Tokyo";
 const SAIGON = "Asia/Ho_Chi_Minh";
+
+// The zone-naming table the backend serves at startup; without it the views
+// would read "Asia/Saigon" and "Asia/Ho_Chi_Minh" as two different places.
+setTimezoneAliases({ "Asia/Saigon": SAIGON });
 
 /** The value of a detail fact row, looked up by its label. */
 function fact(panel: HTMLElement, label: string): string | null {
@@ -702,6 +707,7 @@ describe("duration limits", () => {
     min_duration_minutes: 15,
     max_duration_minutes: 10080,
     default_timezone: SAIGON,
+    timezone_aliases: { "Asia/Saigon": SAIGON },
   };
 
   const durationError = (minutes: number) =>
@@ -723,6 +729,44 @@ describe("duration limits", () => {
   it("says a schedule is too long", () => {
     const node = renderError(durationError(20160), SAIGON, COUNTRIES);
     expect(node.querySelector(".error__text")?.textContent).toBe("Lịch quá dài: 14 ngày.");
+  });
+
+  it("explains a time the clocks skipped instead of echoing the API", () => {
+    const node = renderError(
+      new ApiError("does not exist", 422, {
+        kind: "nonexistentTime",
+        field: "start_time",
+        timezone: "America/New_York",
+        localTime: "2026-03-08T02:30:00",
+        gapMinutes: 60,
+        nextValid: "2026-03-08T03:30:00",
+      }),
+      SAIGON,
+    );
+    const text = node.querySelector(".error__text")?.textContent ?? "";
+    expect(text).toContain("Giờ bắt đầu");
+    expect(text).toContain("02:30");
+    expect(text).toContain("08/03/2026");
+    expect(text).toContain("America/New_York");
+
+    const hint = node.querySelector(".error__hint")?.textContent ?? "";
+    expect(hint).toContain("1 giờ");
+    expect(hint).toContain("03:30");
+  });
+
+  it("names the end time when that is the one that does not exist", () => {
+    const node = renderError(
+      new ApiError("does not exist", 422, {
+        kind: "nonexistentTime",
+        field: "end_time",
+        timezone: "Europe/London",
+        localTime: "2026-03-29T01:30:00",
+        gapMinutes: 60,
+        nextValid: "2026-03-29T02:30:00",
+      }),
+      SAIGON,
+    );
+    expect(node.querySelector(".error__text")?.textContent).toContain("Giờ kết thúc");
   });
 
   it("shows the limits in the form before anything is submitted", () => {

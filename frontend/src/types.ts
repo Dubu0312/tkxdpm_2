@@ -3,7 +3,12 @@ export interface Schedule {
   title: string;
   description: string | null;
   location: string | null;
-  /** ISO-8601 with an explicit offset, in the schedule's own timezone. */
+  /**
+   * ISO-8601 with an explicit offset. Every datetime below follows the same
+   * rule: it is rendered in this schedule's own timezone, so the whole record
+   * can be read off one clock. The offset makes each one an exact instant, so
+   * anything that only cares about the instant can ignore the zone.
+   */
   start_time: string;
   end_time: string;
   /** IANA timezone the schedule was entered in, e.g. "Asia/Tokyo". */
@@ -14,7 +19,7 @@ export interface Schedule {
   reminder_minutes: number | null;
   /** Instant the reminder fires, in the schedule's own timezone; null if none. */
   notify_at: string | null;
-  /** When the reminder was delivered (UTC); null while still pending. */
+  /** When the reminder was delivered; null while still pending. */
   notified_at: string | null;
   /**
    * What became of the reminder. `missed` means its moment passed without it
@@ -27,7 +32,6 @@ export interface Schedule {
   google_synced_at: string | null;
   /** True when the schedule changed after its last successful push to Google. */
   google_out_of_date: boolean;
-  /** ISO-8601 in UTC. */
   created_at: string;
   updated_at: string;
 }
@@ -62,6 +66,8 @@ export interface Limits {
   min_duration_minutes: number;
   max_duration_minutes: number;
   default_timezone: string;
+  /** Old zone names mapped to the spelling the API stores, e.g. Asia/Saigon. */
+  timezone_aliases: Record<string, string>;
 }
 
 /** Whether Google Calendar syncing is available, and how. */

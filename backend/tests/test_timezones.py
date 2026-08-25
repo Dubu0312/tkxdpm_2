@@ -103,10 +103,16 @@ def test_list_is_ordered_by_real_instant_not_wall_clock(client):
     assert titles == ["Tokyo 08:00", "London 08:00"]
 
 
-def test_timestamps_are_reported_in_utc(client):
+def test_timestamps_use_the_schedule_timezone_like_every_other_datetime(client):
+    """One rule for the whole response, so no field needs a footnote.
+
+    The instant is what matters and it is unchanged; rendering it in the
+    schedule's zone just means a client reading `created_at` next to
+    `start_time` is reading two times off the same clock.
+    """
     body = create(client, "2026-09-01T09:00:00", "2026-09-01T10:00:00", TOKYO)
     created = datetime.fromisoformat(body["created_at"])
-    assert created.utcoffset().total_seconds() == 0
+    assert created.utcoffset().total_seconds() == 9 * 3600
     assert abs((datetime.now(UTC) - created).total_seconds()) < 60
 
 

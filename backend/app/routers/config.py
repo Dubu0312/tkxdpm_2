@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app import google_calendar
+from app import google_calendar, timezones
 from app.config import settings
 from app.schemas import GoogleStatusRead, LimitsRead
 
@@ -11,11 +11,17 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 @router.get("", response_model=LimitsRead)
 def read_limits() -> LimitsRead:
-    """Duration limits and the default timezone, so nothing is hard-coded client side."""
+    """Duration limits and timezone naming, so nothing is hard-coded client side.
+
+    ``timezone_aliases`` is the backend's table of old zone names, served rather
+    than duplicated in the frontend: both sides then agree on what a zone is
+    called, which is the only way stored and displayed names can stay the same.
+    """
     return LimitsRead(
         min_duration_minutes=settings.min_duration_minutes,
         max_duration_minutes=settings.max_duration_minutes,
         default_timezone=settings.default_timezone,
+        timezone_aliases=timezones.RENAMED_ZONES,
     )
 
 
