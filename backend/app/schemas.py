@@ -28,6 +28,7 @@ from pydantic import (
 
 from app import holiday_calendar
 from app.config import settings
+from app.models import reminder_status
 
 
 def resolve_timezone(name: str) -> ZoneInfo:
@@ -59,6 +60,19 @@ class ScheduleFields(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=5000)
     location: str | None = Field(default=None, max_length=200)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _trim_title(cls, value):
+        """Trim before validating, so the length rules apply to the real title.
+
+        Runs *before* the constraints on purpose: a title of only spaces then
+        fails ``min_length`` instead of being stored as blank, and one that is
+        200 characters plus surrounding spaces is no longer rejected for a
+        length the user did not type. The limits themselves are unchanged, and
+        both create and update inherit this because both extend this class.
+        """
+        return value.strip() if isinstance(value, str) else value
 
 
 class ScheduleInput(ScheduleFields):
@@ -142,6 +156,8 @@ class ScheduleRead(ScheduleFields):
     notify_at: datetime | None
     #: When the reminder was delivered (UTC); null while it is still pending.
     notified_at: datetime | None
+    #: What became of the reminder: none / scheduled / sent / missed.
+    reminder_status: Literal["none", "scheduled", "sent", "missed"]
     #: Linked Google Calendar event, if the schedule has been synced.
     google_event_id: str | None
     google_calendar_id: str | None
@@ -181,6 +197,7 @@ class ScheduleRead(ScheduleFields):
             notified_at=(
                 None if schedule.notified_at is None else schedule.notified_at.replace(tzinfo=UTC)
             ),
+            reminder_status=reminder_status(schedule),
             google_event_id=schedule.google_event_id,
             google_calendar_id=schedule.google_calendar_id,
             google_synced_at=(

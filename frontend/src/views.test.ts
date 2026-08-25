@@ -46,6 +46,7 @@ function schedule(overrides: Partial<Schedule> = {}): Schedule {
     reminder_minutes: null,
     notify_at: null,
     notified_at: null,
+    reminder_status: "none",
     google_event_id: null,
     google_calendar_id: null,
     google_synced_at: null,
@@ -581,6 +582,7 @@ describe("reminders", () => {
       end_time: "2026-05-10T10:00:00+07:00",
       reminder_minutes: 30,
       notify_at: "2026-05-10T08:30:00+07:00",
+      reminder_status: "scheduled",
       ...overrides,
     });
 
@@ -630,13 +632,37 @@ describe("reminders", () => {
     expect(pending).toContain("08:30");
     expect(pending).toContain("chưa gửi");
 
-    const sent = reminderSummary(withReminder({ notified_at: "2026-05-10T01:30:00+00:00" }), SAIGON);
+    const sent = reminderSummary(
+      withReminder({ notified_at: "2026-05-10T01:30:00+00:00", reminder_status: "sent" }),
+      SAIGON,
+    );
     expect(sent).toContain("đã gửi");
   });
 
   it("shows the reminder moment in the timezone being viewed", () => {
     // 08:30 in Saigon is 10:30 in Tokyo — the same instant.
     expect(reminderSummary(withReminder(), TOKYO)).toContain("10:30");
+  });
+
+  it("stops claiming a missed reminder is still coming", () => {
+    // BUG-03: the panel used to read "chưa gửi" forever for a reminder whose
+    // moment had passed while the schedule was already under way.
+    const missed = withReminder({ reminder_status: "missed" });
+    expect(reminderSummary(missed, SAIGON)).toContain("đã qua, không nhắc nữa");
+    expect(reminderSummary(missed, SAIGON)).not.toContain("chưa gửi");
+  });
+
+  it("marks a missed reminder on the chip too", () => {
+    const panel = renderDetail(
+      withReminder({ reminder_status: "missed" }),
+      { onEdit: () => {}, onDelete: () => {} },
+      SAIGON,
+    );
+    expect(badges(panel)).toContain("Nhắc trước 30 phút · đã qua");
+  });
+
+  it("still says a reminder is waiting when it really is", () => {
+    expect(reminderSummary(withReminder(), SAIGON)).toContain("chưa gửi");
   });
 
   it("says nothing when there is no reminder", () => {
@@ -651,7 +677,7 @@ describe("reminders", () => {
 
   it("says so on the chip once the reminder has gone out", () => {
     const panel = renderDetail(
-      withReminder({ notified_at: "2026-05-10T01:30:00+00:00" }),
+      withReminder({ notified_at: "2026-05-10T01:30:00+00:00", reminder_status: "sent" }),
       { onEdit: () => {}, onDelete: () => {} },
       SAIGON,
     );
@@ -831,7 +857,7 @@ describe("badges on the list", () => {
 
   it("flags a reminder, a country and a Google link", () => {
     const node = renderList(
-      [schedule({ reminder_minutes: 30, country: "VN", google_event_id: "tkdpm1" })],
+      [schedule({ reminder_minutes: 30, reminder_status: "scheduled", country: "VN", google_event_id: "tkdpm1" })],
       null,
       () => {},
       TOKYO,

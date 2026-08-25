@@ -164,7 +164,8 @@ Base URL: `http://127.0.0.1:8001`.
 | GET    | `/api/notifications/due` | Nhắc đã đến lúc gửi nhưng chưa gửi        |
 | POST   | `/api/notifications/dispatch` | Gửi ngay các nhắc đang đến hạn      |
 
-Schedule fields: `title` (bắt buộc, ≤200 ký tự), `start_time`, `end_time` (bắt
+Schedule fields: `title` (bắt buộc, được trim hai đầu, ≤200 ký tự sau khi trim —
+title chỉ gồm khoảng trắng bị từ chối), `start_time`, `end_time` (bắt
 buộc, `end_time` phải sau `start_time`), `timezone` (tên IANA, mặc định
 `DEFAULT_TIMEZONE`), `country` (mã ISO 3166-1 alpha-2, tùy chọn), `location` và
 `description` (tùy chọn), cùng `id`,
@@ -302,6 +303,18 @@ thì không gửi lại.
 Một nhắc "đang chờ" khi chưa gửi **và** lịch chưa bắt đầu; nó "đến hạn" khi
 `notify_at <= now < start_time`. Nhắc của lịch đã bắt đầu tự rơi ra khỏi danh sách
 thay vì gửi muộn — không cần dọn gì.
+
+Trường `reminder_status` trên mỗi lịch cho biết nhắc đó đã đi tới đâu:
+
+| Giá trị | Nghĩa |
+| --- | --- |
+| `none` | lịch không đặt nhắc |
+| `scheduled` | nhắc vẫn sẽ được gửi |
+| `sent` | đã gửi (`notified_at` có giá trị) |
+| `missed` | mốc nhắc đã trôi qua trong khi lịch đã bắt đầu — sẽ không bao giờ gửi |
+
+`missed` được **suy ra**, không lưu: dời lịch trở lại tương lai thì nhắc tự trở
+lại `scheduled`.
 
 Kênh gửi hiện tại là **một dòng log** ở phía server:
 

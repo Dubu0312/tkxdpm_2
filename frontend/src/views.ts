@@ -147,9 +147,19 @@ export function renderSkeleton(count = 3): HTMLElement {
   return box;
 }
 
+/** Wording for each reminder state, so nothing promises a notification twice. */
+const REMINDER_WORDS: Record<Schedule["reminder_status"], string> = {
+  none: "",
+  scheduled: "chưa gửi",
+  sent: "đã gửi",
+  // Its moment passed while the schedule was already under way: it never fired
+  // and never will, which is not the same as "waiting to be sent".
+  missed: "đã qua, không nhắc nữa",
+};
+
 /**
  * "15 phút trước · 10/05/2026 08:45 · đã gửi" — when the reminder fires, shown
- * in the timezone being viewed, plus whether it has already gone out.
+ * in the timezone being viewed, plus what became of it.
  */
 export function reminderSummary(schedule: Schedule, viewTimezone: string): string {
   if (schedule.reminder_minutes === null || schedule.notify_at === null) return "—";
@@ -157,8 +167,10 @@ export function reminderSummary(schedule: Schedule, viewTimezone: string): strin
   const when =
     `${formatDate(schedule.notify_at, viewTimezone)} ` +
     `${formatTime(schedule.notify_at, viewTimezone)}`;
-  const status = schedule.notified_at !== null ? "đã gửi" : "chưa gửi";
-  return `${formatMinutes(schedule.reminder_minutes)} trước · ${when} · ${status}`;
+  return (
+    `${formatMinutes(schedule.reminder_minutes)} trước · ${when} · ` +
+    REMINDER_WORDS[schedule.reminder_status]
+  );
 }
 
 /** "Vietnam (VN)" when the country list is loaded, otherwise just the code. */
@@ -203,13 +215,17 @@ export function renderDetail(
     badges.append(el("span", "badge", countryLabel(schedule.country, countries)));
   }
   if (schedule.reminder_minutes !== null) {
+    const lead = formatMinutes(schedule.reminder_minutes);
+    const sent = schedule.reminder_status === "sent";
     badges.append(
       el(
         "span",
-        schedule.notified_at !== null ? "badge badge--success" : "badge",
-        schedule.notified_at !== null
-          ? `Đã nhắc trước ${formatMinutes(schedule.reminder_minutes)}`
-          : `Nhắc trước ${formatMinutes(schedule.reminder_minutes)}`,
+        sent ? "badge badge--success" : "badge",
+        sent
+          ? `Đã nhắc trước ${lead}`
+          : schedule.reminder_status === "missed"
+            ? `Nhắc trước ${lead} · đã qua`
+            : `Nhắc trước ${lead}`,
       ),
     );
   }

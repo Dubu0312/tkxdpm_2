@@ -16,6 +16,11 @@ export interface Schedule {
   notify_at: string | null;
   /** When the reminder was delivered (UTC); null while still pending. */
   notified_at: string | null;
+  /**
+   * What became of the reminder. `missed` means its moment passed without it
+   * firing and it never will — the schedule had already started.
+   */
+  reminder_status: "none" | "scheduled" | "sent" | "missed";
   /** Linked Google Calendar event; null when the schedule has never been synced. */
   google_event_id: string | null;
   google_calendar_id: string | null;

@@ -1345,3 +1345,124 @@ sau khi đồng bộ Google).
    thông báo trước.
 5. **Người dùng không đổi được light/dark** — giao diện đi theo thiết lập hệ thống.
 6. Các mục tồn đọng về chức năng từ Round 1–9 vẫn giữ nguyên.
+
+---
+
+## Round 11 — Fix validation and reminder edge cases
+
+**Ngày:** 2026-08-25
+**Commit:** `round 11: fix validation and reminder edge cases`
+
+Hai lỗi do người dùng báo sau khi chạy thử API thật.
+
+---
+
+### BUG-01 — Title chỉ có khoảng trắng vẫn được chấp nhận
+
+**Tái hiện.** `POST` với `title` là `"   "`, `"\t\t"` hay `" \t \n "` đều trả **201**
+và lưu nguyên văn; `PUT` cũng vậy. Frontend có `.trim()` trước khi gửi nên form
+không bao giờ lộ ra, nhưng API là contract công khai và phải tự đứng vững.
+
+**Nguyên nhân.** `title: str = Field(min_length=1, max_length=200)` — `"   "` dài 3
+ký tự nên qua được `min_length`. Không có bước chuẩn hóa nào ở backend.
+
+**Cách sửa.** Thêm `field_validator("title", mode="before")` trong `ScheduleFields`,
+trim rồi mới để pydantic áp ràng buộc độ dài. Chọn `mode="before"` chứ không phải
+`after` vì hai lý do:
+
+* title toàn khoảng trắng biến thành `""` và trượt `min_length` — đúng thứ ta muốn;
+* ràng buộc độ dài áp lên **title thật**. Trước đây `" " + "x"*200 + " "` bị **422**
+  vì `max_length` đếm cả khoảng trắng người dùng không hề gõ; giờ được chấp nhận và
+  lưu đúng 200 ký tự. Giới hạn vẫn là 200, chỉ là đo trên phần có nghĩa.
+
+`ScheduleCreate` và `ScheduleUpdate` đều kế thừa `ScheduleFields` nên **create và
+update dùng chung đúng một rule**, không phải lặp lại.
+
+Chỉ trim `title`; `location` và `description` không nằm trong phạm vi báo lỗi nên
+giữ nguyên (ghi ở phần tồn tại bên dưới).
+
+**Test.** `tests/test_title_validation.py`, 22 test ở tầng API: 5 dạng khoảng trắng
+× cả `POST` lẫn `PUT`, chuỗi rỗng, không ghi gì khi bị từ chối, bản ghi cũ không đổi
+khi `PUT` bị từ chối, trim hai đầu nhưng **không** đụng khoảng trắng ở giữa, và bốn
+test cho ranh giới độ dài (đúng 200, 201, 200 + đệm, 201 + đệm).
+
+---
+
+### BUG-03 — Reminder của lịch quá khứ kẹt ở "chưa gửi"
+
+**Tái hiện.** Tạo lịch trong quá khứ kèm `reminder_minutes`: `notify_at` nằm ở quá
+khứ, `pending` = 0, `due` = 0, `dispatch` = 0, và `notified_at` = `null` vĩnh viễn.
+Giao diện đọc `notified_at == null` thành "chưa gửi" nên hứa một thông báo không bao
+giờ đến.
+
+**Nguyên nhân.** Cửa sổ gửi (`notify_at <= now < start_time`, từ Round 6) là **đúng**
+— nhắc một cuộc họp đã bắt đầu thì vô nghĩa. Vấn đề nằm ở chỗ hệ thống **không nói
+ra điều đó**: API chỉ có `notified_at`, mà `null` bị hiểu là "đang chờ". Không phân
+biệt được "sắp gửi" và "đã lỡ, sẽ không gửi".
+
+**Các phương án đã cân nhắc.**
+
+| Phương án | Vì sao không chọn |
+| --- | --- |
+| Gửi bù dù lịch đã bắt đầu | Nhắc về cuộc họp đang diễn ra hoặc đã xong là phiền, không phải hữu ích |
+| Từ chối tạo nhắc cho lịch quá khứ (422) | Ứng dụng vốn cho phép tạo lịch quá khứ (Round 9); và không giải quyết được lịch **trở thành** quá khứ sau khi bị dời |
+| Tự xóa `reminder_minutes` | Xóa dữ liệu người dùng đã nhập |
+| Thêm cột trạng thái vào database | Phải cập nhật hàng loạt theo thời gian trôi; trạng thái này vốn suy ra được |
+
+**Cách sửa — đặt tên cho trạng thái, suy ra chứ không lưu.** Thêm
+`models.reminder_status(schedule, now)` trả về một trong bốn giá trị:
+
+| Giá trị | Nghĩa |
+| --- | --- |
+| `none` | lịch không đặt nhắc |
+| `scheduled` | nhắc vẫn sẽ được gửi |
+| `sent` | đã gửi |
+| `missed` | mốc nhắc đã trôi qua khi lịch đã bắt đầu — sẽ không bao giờ gửi |
+
+`ScheduleRead` trả thêm trường `reminder_status` (bổ sung, không phá contract cũ),
+và `notifications.pending()` được viết lại theo chính hàm này nên **hai nơi không
+thể lệch nhau**. Không thêm cột, không migration: `missed` chỉ là hệ quả của
+`start_time` so với hiện tại, nên dời lịch trở lại tương lai thì nhắc tự về
+`scheduled` — đã kiểm chứng cả hai chiều.
+
+**Frontend.** `reminderSummary` và chip trong panel đọc theo `reminder_status`:
+`sent` → "đã gửi", `scheduled` → "chưa gửi", `missed` → "đã qua, không nhắc nữa"
+(chip hiện "Nhắc trước 30 phút · đã qua").
+
+**Test.** `tests/test_reminder_status.py`, 17 test: bốn trạng thái (kể cả lịch bắt
+đầu đúng thời điểm hiện tại → `missed`, và `sent` không bị "mất hiệu lực" khi lịch
+đã qua), `pending` chỉ chứa `scheduled`, nhắc `missed` không bao giờ được dispatch,
+bốn test qua API, và bốn test cho việc dời lịch qua lại giữa quá khứ/tương lai.
+
+---
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **261 passed** (222 cũ + 39 mới) |
+| Regression các vùng liên quan | 9 file test của các round trước | **220 passed**, không sửa gì |
+| Frontend typecheck / test / build | `tsc`, `npm test`, `npm run build` | Sạch / **142 passed** (139 + 3 mới) / Built OK |
+| Kiểm chứng test bắt được lỗi | tạm gỡ `backend/app` rồi chạy lại | **17/22** test title fail; file test reminder thậm chí không import được vì hàm chưa tồn tại, và response cũ không có trường `reminder_status` nào |
+| API thật | server riêng trên cổng 8002, database tạm | title `'   '` / `'\t\t'` / `''` → **422**; `'  Họp nhóm  '` → **201** lưu `'Họp nhóm'`; `PUT` khoảng trắng → **422** và bản ghi cũ không đổi; lịch quá khứ → `missed`, lịch tương lai → `scheduled`, `pending`=1, `dispatch`=0 |
+
+### Vấn đề còn tồn tại
+
+1. **`location` và `description` chưa được trim ở backend.** Cùng loại vấn đề với
+   title nhưng không nằm trong phạm vi báo lỗi nên chưa đụng tới; hệ quả là
+   `location = "   "` vẫn lưu được và hiện thành một dòng trắng ở panel chi tiết.
+2. **`reminder_status` phụ thuộc đồng hồ lúc đọc**, nên một phản hồi được cache lâu
+   có thể nói `scheduled` cho một nhắc vừa thành `missed`. Với ứng dụng local thì
+   không đáng kể.
+3. **Lịch quá khứ vẫn tạo được kèm nhắc** — có chủ ý: hệ thống nói thẳng là nhắc sẽ
+   không gửi thay vì chặn người dùng nhập.
+4. Các mục tồn đọng từ Round 1–10 vẫn giữ nguyên.
+
+### Lưu ý vận hành
+
+Trong lúc kiểm tra, tôi đã xóa các bản ghi trong `data/app.db` khi chưa nhận ra
+server `python run.py` của bạn đang chạy trên cổng 8001 với dữ liệu thử nghiệm —
+dữ liệu đó không khôi phục được. Các bước kiểm tra sau đó chuyển hẳn sang một
+database tạm và cổng 8002, và server của bạn không bị dừng. Server đó vẫn đang chạy
+**code cũ**, cần khởi động lại để nhận hai bản sửa này.

@@ -18,7 +18,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Schedule, preserve_updated_at, utcnow
+from app.models import Schedule, preserve_updated_at, reminder_status, utcnow
 
 logger = logging.getLogger("app.notifications")
 
@@ -34,13 +34,17 @@ def _armed(session: Session) -> list[Schedule]:
 
 
 def pending(session: Session, now: datetime | None = None) -> list[Schedule]:
-    """Reminders that can still fire: not sent, and the schedule has not started.
+    """Reminders that can still fire.
 
     A reminder whose schedule has already begun is past being useful, so it
-    silently drops out instead of firing late. Nothing needs to be cleaned up.
+    drops out instead of firing late — it is reported as ``missed`` on the
+    schedule rather than sitting here forever. The classification lives in
+    ``models.reminder_status`` so this and the API cannot disagree.
     """
     moment = now or utcnow()
-    return [schedule for schedule in _armed(session) if schedule.start_time > moment]
+    return [
+        schedule for schedule in _armed(session) if reminder_status(schedule, moment) == "scheduled"
+    ]
 
 
 def due(session: Session, now: datetime | None = None) -> list[Schedule]:

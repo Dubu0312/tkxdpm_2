@@ -85,6 +85,7 @@ describe("api client", () => {
       reminder_minutes: null,
       notify_at: null,
       notified_at: null,
+      reminder_status: "none",
       google_event_id: null,
       google_calendar_id: null,
       google_synced_at: null,

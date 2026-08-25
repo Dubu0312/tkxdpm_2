@@ -94,3 +94,29 @@ def preserve_updated_at(schedule: Schedule) -> None:
     """
     schedule.updated_at = schedule.updated_at
     flag_modified(schedule, "updated_at")
+
+
+#: What became of a schedule's reminder.
+#:
+#: ``none``      the schedule has no reminder
+#: ``scheduled`` the reminder is still going to fire
+#: ``sent``      it was delivered
+#: ``missed``    its moment passed without it firing, and it never will
+REMINDER_STATES = ("none", "scheduled", "sent", "missed")
+
+
+def reminder_status(schedule: Schedule, now: datetime | None = None) -> str:
+    """Classify a schedule's reminder.
+
+    A reminder is only useful before the schedule starts, so once the schedule
+    has begun an undelivered reminder is *missed*, not pending: it will never
+    go out. Saying so is what stops the interface promising a notification that
+    can no longer happen.
+    """
+    if schedule.reminder_minutes is None:
+        return "none"
+    if schedule.notified_at is not None:
+        return "sent"
+    if schedule.start_time <= (now or utcnow()):
+        return "missed"
+    return "scheduled"
