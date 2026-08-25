@@ -306,6 +306,56 @@ body {
   gap: var(--s-1);
 }
 
+.listsection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+/* Deliberately not the small uppercase treatment used by the column label and
+   the day headers: this is the one division of the list that should read as a
+   heading, not as another eyebrow stacked on the two around it. */
+.listsection__title,
+.pastgroup__summary {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--c-text);
+}
+
+.listsection__empty {
+  margin: 0;
+  padding: var(--s-3);
+  border: 1px dashed var(--c-border-strong);
+  border-radius: var(--r-md);
+  text-align: center;
+}
+
+.pastgroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--c-border);
+}
+
+.pastgroup__summary {
+  cursor: pointer;
+  padding: var(--s-1) 0;
+  color: var(--c-text-soft);
+}
+
+.pastgroup__summary:hover {
+  color: var(--c-text);
+}
+
+.pastgroup__summary:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
 .day {
   margin: var(--s-3) 0 var(--s-1);
   font-size: 0.72rem;
@@ -346,6 +396,16 @@ body {
 .card--active {
   border-color: var(--c-brand);
   background: var(--c-brand-soft);
+}
+
+/* Already finished: still readable, visibly behind you. */
+.card--past .card__title,
+.card--past .card__time {
+  color: var(--c-text-muted);
+}
+
+.card--past:not(.card--active) {
+  background: var(--c-surface-2);
 }
 
 .card__time {
@@ -628,9 +688,28 @@ body {
   color: var(--c-text-muted);
 }
 
+.field__error {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--c-danger);
+}
+
+/* The field itself carries the state too, not just the sentence under it. */
+[aria-invalid="true"] {
+  border-color: var(--c-danger);
+}
+
+[aria-invalid="true"]:focus-visible {
+  outline-color: var(--c-danger);
+}
+
 input,
 select,
 textarea {
+  /* Focusing an invalid control scrolls it into view, and the topbar is sticky:
+     without this the control and its message land underneath it. It has to sit
+     on the control itself — that is the element being scrolled to. */
+  scroll-margin-top: 6rem;
   font: inherit;
   font-size: 0.9rem;
   color: inherit;

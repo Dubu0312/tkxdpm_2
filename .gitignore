@@ -48,6 +48,13 @@ yarn-error.log*
 pnpm-debug.log*
 .eslintcache
 
+# Playwright: browsers, run artefacts, and the throwaway database an e2e run uses
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.e2e/
+playwright/.cache/
+
 # ---------- Environment / Secrets ----------
 .env
 .env.*

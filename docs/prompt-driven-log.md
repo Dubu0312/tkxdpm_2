@@ -1646,3 +1646,166 @@ lùi về gọi tên nguyên văn thay vì hỏng cả trang.
   người dùng chọn lần thứ hai. Cần thì phải thêm vào API (ví dụ cờ `fold`).
 * `location` / `description` vẫn chưa được trim ở backend (đã ghi ở Round 11,
   ngoài phạm vi round này).
+
+---
+
+## Round 13 — Fix scheduling UI semantics
+
+**Ngày:** 2026-08-25
+**Commit:** `round 13: fix scheduling UI semantics`
+
+Hai lỗi UI/UX do người dùng phát hiện khi test bằng Playwright. Điểm chung: cả
+hai đều **vô hình với bộ test jsdom hiện có** — một cái là ý nghĩa của chữ trên
+màn hình, một cái là thứ trình duyệt tự thêm vào. Vì vậy round này bổ sung luôn
+một tầng test chạy trong browser thật.
+
+---
+
+### BUG-02 — "Lịch sắp tới" chứa cả lịch đã qua
+
+**Hiện tượng.** Tiêu đề cột ghi "Lịch sắp tới" nhưng bên dưới render toàn bộ
+schedules, kể cả lịch đã kết thúc từ lâu.
+
+**Nguyên nhân.** Không có bug logic nào cả — `renderList` vốn chỉ nhóm theo ngày
+rồi đổ ra hết. Cái sai nằm ở chỗ tiêu đề **hứa một việc mà danh sách không làm**.
+Từ Round 1 tới giờ danh sách luôn là "tất cả lịch"; chữ "sắp tới" được thêm vào ở
+Round 10 lúc làm lại giao diện và không ai đối chiếu lại với nội dung.
+
+**Cách sửa.** Làm cho danh sách đúng như tiêu đề nói, thay vì đổi tiêu đề thành
+"Tất cả lịch" — vì yêu cầu thật của người dùng là *phân biệt được* hai loại:
+
+* **Sắp tới** — hiện luôn, xếp tăng dần.
+* **Đã qua** — `<details>` thu gọn kèm số lượng, mới nhất trước.
+
+Ranh giới là **thời điểm kết thúc**, không phải thời điểm bắt đầu:
+
+```ts
+export function standingOf(schedule: Schedule, now: Date): Standing {
+  const moment = now.getTime();
+  if (parseInstant(schedule.end_time).getTime() <= moment) return "past";
+  return parseInstant(schedule.start_time).getTime() <= moment ? "ongoing" : "upcoming";
+}
+```
+
+Lấy mốc kết thúc là điều giữ cho **cuộc họp đang ngồi trong đó** không bị đẩy
+sang "đã qua" — lỗi này khó chịu hơn hẳn lỗi ban đầu. Lịch đang chạy nằm ở phần
+"Sắp tới" kèm nhãn **Đang diễn ra**, nói thẳng ra bằng chữ thay vì để người dùng
+tự suy.
+
+**Vài quyết định nhỏ:**
+
+* Thu gọn phần "Đã qua" vì nó chỉ dài thêm theo thời gian và không phải lý do
+  người ta mở trang. Dùng `<details>/<summary>` nên có sẵn hành vi bàn phím và
+  screen reader, không phải tự dựng.
+* Quá khứ xếp **ngược** (mới nhất trước): thứ vừa xảy ra là thứ đáng tìm nhất.
+* Chỉ còn lịch quá khứ → phần "Sắp tới" ghi rõ "Không có lịch nào sắp tới.",
+  khác hẳn empty state "Chưa có lịch nào" của lần đầu dùng.
+* `renderList` nhận thêm tham số `now` (mặc định `new Date()`), để test cố định
+  được thời gian thay vì phải giả lập đồng hồ.
+* Tiêu đề cột đổi thành "Lịch của bạn" — giờ nó đứng đầu **cả hai** phần.
+* Ngày (`h3.day`) hạ xuống `h4` vì đã có `h3` cho tên phần, giữ thứ bậc heading
+  không nhảy cấp.
+
+**Backend không đổi.** Việc phân loại dựa trên instant đã có trong response nên
+đúng ở mọi múi giờ đang xem; không cần endpoint hay tham số mới.
+
+---
+
+### BUG-04 — Validation message tiếng Anh của trình duyệt
+
+**Hiện tượng.** Trang tiếng Việt, nhưng submit title rỗng thì trình duyệt hiện
+bong bóng `Please fill out this field.`
+
+**Nguyên nhân.** Các input có `required` và form không tắt validation gốc, nên
+trình duyệt chặn submit và tự hiện thông báo bằng ngôn ngữ của **nó**, không phải
+của trang. Không thể dịch và cũng không thể style bong bóng đó.
+
+**Cách sửa.** `form.noValidate = true` để tắt **giao diện** gốc, giữ nguyên
+thuộc tính `required` trên từng control, rồi tự kiểm tra và tự hiển thị:
+
+```ts
+function checkRequired(): boolean {
+  let firstBad: HTMLInputElement | null = null;
+  for (const [control, message] of requiredFields) {
+    const empty = control.value.trim() === "";
+    setFieldError(control, empty ? message : null);
+    if (empty && firstBad === null) firstBad = control;
+  }
+  if (firstBad) firstBad.focus();
+  return firstBad === null;
+}
+```
+
+**Không làm giảm accessibility** — đây là điều người dùng dặn riêng:
+
+| | Trước (native) | Sau |
+| --- | --- | --- |
+| Thông báo | bong bóng tiếng Anh, tự biến mất | `.field__error` cạnh ô, ở lại tới khi sửa xong |
+| Trạng thái ô | pseudo-class `:invalid` | `aria-invalid="true"` + viền đỏ |
+| Liên kết message ↔ ô | ngầm | `aria-describedby` trỏ đúng id |
+| "Bắt buộc" | `required` | **giữ nguyên** `required` |
+| Focus | trình duyệt tự nhảy | tự focus ô sai đầu tiên |
+
+Thông báo tự xóa ngay khi ô có nội dung, nên không treo trên ô đã sửa xong.
+
+**Phạm vi kiểm tra giữ đúng bằng cái native đã làm** — chỉ "ô bắt buộc không được
+rỗng", cộng thêm title toàn khoảng trắng tính là rỗng (khớp rule backend từ
+Round 11, và đây chính là trường hợp `required` gốc *cho lọt*). Thời lượng, ngày
+nghỉ, trùng giờ vẫn để backend trả lời qua panel lỗi như cũ: kiểm tra hai lần là
+cách hai câu trả lời bắt đầu lệch nhau.
+
+---
+
+### Thêm tầng test Playwright
+
+Cả hai lỗi này lọt qua 149 test jsdom vì jsdom **không có** validation gốc của
+form, không có layout, không có focus thật. Nên round này thêm `frontend/e2e/`
+chạy trong Chromium thật:
+
+* `playwright.config.ts` tự khởi động backend (cổng **8917**, SQLite tạm trong
+  `frontend/.e2e/`) và Vite (cổng **5917**). Chọn cổng lạ có chủ đích: 5173 và
+  8001 thường đã có server đang chạy, và một lần chạy test không được tranh cổng
+  với chúng.
+* Không đụng `data/app.db`; mỗi lần chạy xóa và tạo lại database tạm.
+* Artefacts (`test-results/`, `.e2e/`, `playwright-report/`) đã cho vào
+  `.gitignore`.
+
+### Test đã chạy
+
+| Kiểm tra | Kết quả |
+| --- | --- |
+| `npm run test:e2e` (Playwright, Chromium) | **19 passed** |
+| — empty state | 1 test: "Chưa có lịch nào", không có phần Sắp tới/Đã qua |
+| — upcoming/past | 5 test: chỉ lịch chưa xong ở "Sắp tới", "Đã qua (2)" thu gọn, nhãn Đang diễn ra, trường hợp chỉ còn quá khứ, mở được lịch cũ |
+| — form validation | 7 test: thông báo tiếng Việt, `noValidate` + `required`, `aria-invalid`/`aria-describedby`/focus, ô sai được cuộn ra khỏi header dính, title toàn khoảng trắng, tự xóa message, submit hợp lệ vẫn chạy |
+| — responsive & a11y | 6 test: 390px và 1280px không tràn ngang, một `h1` và heading không nhảy cấp, mở "Đã qua" bằng bàn phím, mọi control có tên đọc được, `role="alert"` / `aria-live` |
+| Kiểm chứng test bắt được lỗi | tạm gỡ bản sửa: **9/11** test của hai bug fail |
+| `npm test` (vitest) | **164 passed** (149 + 15 mới) |
+| Kiểm chứng test unit bắt được lỗi | tạm gỡ `views.ts`: **13/15** test mới fail |
+| `npm run typecheck` / `npm run build` | sạch / OK |
+| `pytest` + `ruff` (backend) | **304 passed** / sạch — round này không đổi backend |
+
+### Một lỗi chỉ ảnh chụp mới thấy
+
+Chụp màn hình lại (như Round 10) cho thấy: khi bấm nút submit ở cuối form dài,
+trang đã cuộn xuống, `focus()` kéo ô sai trở lại nhưng nó nằm **khuất sau topbar
+dính** — người dùng thấy form nhảy mà không thấy lỗi. Sửa bằng
+`scroll-margin-top: 6rem` đặt trên chính `input/select/textarea` (đặt trên
+`.field` không có tác dụng: phần tử được cuộn tới là control, không phải wrapper).
+Đã thêm test e2e so sánh `boundingBox()` của ô với đáy topbar.
+
+Cùng lúc đó, ảnh chụp cho thấy tiêu đề phần "Sắp tới" ban đầu dùng đúng kiểu chữ
+in hoa nhỏ như nhãn cột và như tiêu đề ngày, thành ba nhãn gần giống nhau chồng
+lên nhau. Đã đổi sang cỡ lớn hơn, chữ thường, màu đậm — để nó đọc như một tiêu đề
+thật, còn nhãn cột và tiêu đề ngày giữ vai trò phụ.
+
+### Còn tồn tại
+
+* Việc phân loại sắp tới/đã qua tính lại mỗi lần render, không có đồng hồ chạy
+  nền. Một lịch kết thúc trong lúc trang đang mở chỉ chuyển sang "Đã qua" ở lần
+  render kế tiếp (tạo/sửa/xóa/đổi múi giờ). Đủ cho demo; muốn chính xác từng
+  phút thì cần một `setInterval` re-render.
+* Playwright cần tải browser một lần (`npx playwright install chromium`, ~115MB),
+  nên `npm run test:e2e` không nằm trong luồng test mặc định.
+* Suite e2e chỉ chạy Chromium. Thêm Firefox/WebKit chỉ là thêm `projects`, nhưng
+  chưa cần cho phạm vi hiện tại.

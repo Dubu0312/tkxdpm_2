@@ -10,6 +10,7 @@ import {
   listTimezones,
   nowInputValue,
   offsetLabel,
+  parseInstant,
   sameZone,
   shiftWallClock,
   toInputValue,
@@ -46,12 +47,47 @@ function groupByDay(schedules: Schedule[], viewTimezone: string): [string, Sched
   return [...groups.entries()];
 }
 
+/** Where a schedule sits relative to now, judged on the real instants. */
+export type Standing = "upcoming" | "ongoing" | "past";
+
+/**
+ * A schedule is `past` only once it has *ended*.
+ *
+ * Using the end and not the start is what keeps a meeting you are sitting in
+ * out of the "already happened" pile. The comparison is between instants, so it
+ * is unaffected by the timezone the schedule was entered in or the one it is
+ * being viewed in.
+ */
+export function standingOf(schedule: Schedule, now: Date): Standing {
+  const moment = now.getTime();
+  if (parseInstant(schedule.end_time).getTime() <= moment) return "past";
+  return parseInstant(schedule.start_time).getTime() <= moment ? "ongoing" : "upcoming";
+}
+
+function dayGroups(
+  schedules: Schedule[],
+  selectedId: number | null,
+  onSelect: (id: number) => void,
+  viewTimezone: string,
+  now: Date,
+): HTMLElement[] {
+  const nodes: HTMLElement[] = [];
+  for (const [day, items] of groupByDay(schedules, viewTimezone)) {
+    nodes.push(el("h4", "day", formatDay(day)));
+    for (const schedule of items) {
+      nodes.push(renderCard(schedule, selectedId, onSelect, viewTimezone, now));
+    }
+  }
+  return nodes;
+}
+
 export function renderList(
   schedules: Schedule[],
   selectedId: number | null,
   onSelect: (id: number) => void,
   viewTimezone: string,
   onCreate?: () => void,
+  now: Date = new Date(),
 ): HTMLElement {
   const container = el("div", "list");
 
@@ -72,12 +108,37 @@ export function renderList(
     return container;
   }
 
-  for (const [day, items] of groupByDay(schedules, viewTimezone)) {
-    container.append(el("h3", "day", formatDay(day)));
-    for (const schedule of items) {
-      container.append(renderCard(schedule, selectedId, onSelect, viewTimezone));
-    }
+  // Two piles, because "sắp tới" has to mean it. Anything still running counts
+  // as ahead of you, not behind you — see `standingOf`.
+  const ahead = schedules.filter((schedule) => standingOf(schedule, now) !== "past");
+  const behind = schedules.filter((schedule) => standingOf(schedule, now) === "past");
+
+  const upcoming = el("section", "listsection");
+  upcoming.append(el("h3", "listsection__title", "Sắp tới"));
+  if (ahead.length === 0) {
+    upcoming.append(
+      el("p", "listsection__empty empty", "Không có lịch nào sắp tới."),
+    );
+  } else {
+    upcoming.append(...dayGroups(ahead, selectedId, onSelect, viewTimezone, now));
   }
+  container.append(upcoming);
+
+  if (behind.length > 0) {
+    // Collapsed by default: what already happened is reference, not the reason
+    // the page is open, and the pile only ever grows. <details> gives the
+    // keyboard and screen-reader behaviour of a disclosure for free.
+    const group = el("details", "pastgroup");
+    const summary = document.createElement("summary");
+    summary.className = "pastgroup__summary";
+    summary.textContent = `Đã qua (${behind.length})`;
+    group.append(summary);
+    // Most recent first: the last thing that happened is the one worth finding.
+    const recentFirst = [...behind].reverse();
+    group.append(...dayGroups(recentFirst, selectedId, onSelect, viewTimezone, now));
+    container.append(group);
+  }
+
   return container;
 }
 
@@ -86,9 +147,12 @@ function renderCard(
   selectedId: number | null,
   onSelect: (id: number) => void,
   viewTimezone: string,
+  now: Date,
 ): HTMLElement {
+  const standing = standingOf(schedule, now);
   const card = el("button", "card");
   card.type = "button";
+  if (standing === "past") card.classList.add("card--past");
   if (schedule.id === selectedId) card.classList.add("card--active");
   card.setAttribute("aria-current", schedule.id === selectedId ? "true" : "false");
   card.title = formatRange(schedule.start_time, schedule.end_time, viewTimezone);
@@ -120,6 +184,11 @@ function renderCard(
   if (meta) card.append(el("span", "card__meta", meta));
 
   const badges = el("div", "card__badges");
+  // Said in words as well as in styling: a schedule happening right now is the
+  // one case where "sắp tới" would otherwise be misleading.
+  if (standing === "ongoing") {
+    badges.append(el("span", "badge badge--brand", "Đang diễn ra"));
+  }
   if (schedule.reminder_minutes !== null) {
     badges.append(el("span", "badge", `Nhắc ${formatMinutes(schedule.reminder_minutes)}`));
   }
@@ -373,6 +442,41 @@ function field(
   return wrapper;
 }
 
+let fieldErrorSeq = 0;
+
+/**
+ * Show or clear this app's own validation message for one control.
+ *
+ * The browser's built-in bubble is not used: it speaks English on a Vietnamese
+ * page, it cannot be styled to match the rest of the app's errors, and it
+ * disappears the moment attention moves. This message is an ordinary element
+ * that stays until the field is fixed, and it is wired up the way an assistive
+ * technology expects — `aria-invalid` on the control, `aria-describedby`
+ * pointing at the text — so nothing is lost by dropping the native UI. The
+ * `required` attributes stay on the inputs for the same reason.
+ */
+function setFieldError(control: HTMLElement, message: string | null): void {
+  const wrapper = control.closest(".field");
+  if (!wrapper) return;
+  const existing = wrapper.querySelector<HTMLElement>(".field__error");
+
+  if (message === null) {
+    existing?.remove();
+    control.removeAttribute("aria-invalid");
+    control.removeAttribute("aria-describedby");
+    return;
+  }
+
+  const node = existing ?? el("span", "field__error");
+  if (!existing) {
+    node.id = `field-error-${++fieldErrorSeq}`;
+    wrapper.append(node);
+  }
+  node.textContent = message;
+  control.setAttribute("aria-invalid", "true");
+  control.setAttribute("aria-describedby", node.id);
+}
+
 /** A titled group of fields, so the form reads as sections not a long stack. */
 function section(legend: string, ...fields: HTMLElement[]): HTMLElement {
   const box = el("fieldset", "form__section");
@@ -494,6 +598,10 @@ export function renderForm(
 ): HTMLElement {
   const values = initialValues(schedule, draft, defaultTimezone);
   const form = el("form", "panel form");
+  // The browser's own validation UI is turned off here, not the validation
+  // itself: `checkRequired` below does the same job in the app's language and
+  // styling. `required` stays on each control so it is still announced.
+  form.noValidate = true;
   form.append(el("h2", undefined, schedule ? "Chỉnh sửa lịch" : "Tạo lịch mới"));
   form.append(
     el(
@@ -577,8 +685,43 @@ export function renderForm(
     previousStart = start.value;
   });
 
+  /** Fields that must not be empty, with what to say when they are. */
+  const requiredFields: [HTMLInputElement, string][] = [
+    [title, "Vui lòng nhập tiêu đề cho lịch."],
+    [start, "Vui lòng chọn thời gian bắt đầu."],
+    [end, "Vui lòng chọn thời gian kết thúc."],
+  ];
+
+  // Clear a message as soon as the field it belongs to has something in it, so
+  // it never lingers over a field the user has already fixed.
+  for (const [control] of requiredFields) {
+    control.addEventListener("input", () => {
+      if (control.value.trim() !== "") setFieldError(control, null);
+    });
+  }
+
+  /**
+   * Check what the browser's bubble used to check, and nothing more.
+   *
+   * A title of only spaces counts as empty, matching the rule the backend
+   * applies. Everything else — the length of the schedule, holidays, overlaps —
+   * stays with the backend and is reported through the same error panel as
+   * before; validating it twice is how the two answers start to disagree.
+   */
+  function checkRequired(): boolean {
+    let firstBad: HTMLInputElement | null = null;
+    for (const [control, message] of requiredFields) {
+      const empty = control.value.trim() === "";
+      setFieldError(control, empty ? message : null);
+      if (empty && firstBad === null) firstBad = control;
+    }
+    if (firstBad) firstBad.focus();
+    return firstBad === null;
+  }
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!checkRequired()) return;
     handlers.onSubmit({
       title: title.value.trim(),
       description: description.value.trim() || null,

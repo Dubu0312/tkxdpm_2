@@ -16,6 +16,7 @@ import {
   renderError,
   renderForm,
   renderList,
+  standingOf,
   timezoneSelect,
 } from "./views";
 
@@ -97,6 +98,166 @@ describe("renderList", () => {
     const node = renderList([schedule({ title: "<img src=x onerror=alert(1)>" })], null, () => {}, TOKYO);
     expect(node.querySelector("img")).toBeNull();
     expect(node.querySelector(".card__title")?.textContent).toBe("<img src=x onerror=alert(1)>");
+  });
+});
+
+describe("upcoming and past", () => {
+  const NOW = new Date("2026-09-01T12:00:00Z");
+
+  /** A schedule running between two offsets from NOW, in hours. */
+  const around = (fromHours: number, toHours: number, overrides: Partial<Schedule> = {}) =>
+    schedule({
+      start_time: new Date(NOW.getTime() + fromHours * 3600_000).toISOString(),
+      end_time: new Date(NOW.getTime() + toHours * 3600_000).toISOString(),
+      ...overrides,
+    });
+
+  it("calls a schedule past only once it has ended", () => {
+    expect(standingOf(around(-3, -2), NOW)).toBe("past");
+    expect(standingOf(around(-1, 1), NOW)).toBe("ongoing");
+    expect(standingOf(around(2, 3), NOW)).toBe("upcoming");
+  });
+
+  it("treats the exact end instant as past and the exact start as ongoing", () => {
+    expect(standingOf(around(-2, 0), NOW)).toBe("past");
+    expect(standingOf(around(0, 2), NOW)).toBe("ongoing");
+  });
+
+  it("keeps finished schedules out of the upcoming section", () => {
+    const node = renderList(
+      [around(-5, -4, { id: 1, title: "Đã qua" }), around(4, 5, { id: 2, title: "Sắp tới" })],
+      null,
+      () => {},
+      TOKYO,
+      undefined,
+      NOW,
+    );
+    const upcoming = node.querySelector(".listsection")!;
+    expect([...upcoming.querySelectorAll(".card__title")].map((n) => n.textContent)).toEqual([
+      "Sắp tới",
+    ]);
+    expect(node.querySelector(".pastgroup__summary")?.textContent).toBe("Đã qua (1)");
+  });
+
+  it("lists the past most recent first", () => {
+    const node = renderList(
+      [
+        around(-9, -8, { id: 1, title: "Cũ hơn" }),
+        around(-3, -2, { id: 2, title: "Gần đây" }),
+      ],
+      null,
+      () => {},
+      TOKYO,
+      undefined,
+      NOW,
+    );
+    const titles = [...node.querySelectorAll(".pastgroup .card__title")].map((n) => n.textContent);
+    expect(titles).toEqual(["Gần đây", "Cũ hơn"]);
+  });
+
+  it("says there is nothing coming rather than showing an empty section", () => {
+    const node = renderList([around(-5, -4)], null, () => {}, TOKYO, undefined, NOW);
+    expect(node.querySelector(".listsection__empty")?.textContent).toBe(
+      "Không có lịch nào sắp tới.",
+    );
+    // Not the same as having no schedules at all.
+    expect(node.querySelector(".emptystate")).toBeNull();
+  });
+
+  it("keeps the first-run empty state when there is nothing at all", () => {
+    const node = renderList([], null, () => {}, TOKYO, undefined, NOW);
+    expect(node.querySelector(".emptystate")).not.toBeNull();
+    expect(node.querySelector(".listsection")).toBeNull();
+    expect(node.querySelector(".pastgroup")).toBeNull();
+  });
+
+  it("badges the schedule that is happening right now", () => {
+    const node = renderList([around(-1, 1)], null, () => {}, TOKYO, undefined, NOW);
+    expect(node.querySelector(".card .badge")?.textContent).toBe("Đang diễn ra");
+  });
+
+  it("marks past cards so they read as behind you", () => {
+    const node = renderList([around(-5, -4)], null, () => {}, TOKYO, undefined, NOW);
+    expect(node.querySelector(".card")?.classList.contains("card--past")).toBe(true);
+  });
+});
+
+describe("form validation", () => {
+  const handlers = () => ({ onSubmit: vi.fn(), onCancel: vi.fn() });
+
+  it("turns off the browser's own validation UI but keeps the constraint", () => {
+    const form = renderForm(null, handlers()) as HTMLFormElement;
+    expect(form.noValidate).toBe(true);
+    expect(form.querySelectorAll<HTMLInputElement>("input")[0]!.required).toBe(true);
+  });
+
+  it("refuses an empty title in Vietnamese instead of submitting", () => {
+    const h = handlers();
+    const form = renderForm(null, h);
+    form.querySelectorAll<HTMLInputElement>("input")[0]!.value = "";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    expect(h.onSubmit).not.toHaveBeenCalled();
+    expect(form.querySelector(".field__error")?.textContent).toBe(
+      "Vui lòng nhập tiêu đề cho lịch.",
+    );
+  });
+
+  it("treats a title of only spaces as empty, like the backend does", () => {
+    const h = handlers();
+    const form = renderForm(null, h);
+    form.querySelectorAll<HTMLInputElement>("input")[0]!.value = "   ";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(h.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("wires the message to the field the way a screen reader expects", () => {
+    const form = renderForm(null, handlers());
+    const title = form.querySelectorAll<HTMLInputElement>("input")[0]!;
+    title.value = "";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    expect(title.getAttribute("aria-invalid")).toBe("true");
+    const describedBy = title.getAttribute("aria-describedby")!;
+    expect(form.querySelector(`#${describedBy}`)?.textContent).toBe(
+      "Vui lòng nhập tiêu đề cho lịch.",
+    );
+  });
+
+  it("clears the message once the field has something in it", () => {
+    const form = renderForm(null, handlers());
+    const title = form.querySelectorAll<HTMLInputElement>("input")[0]!;
+    title.value = "";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(form.querySelector(".field__error")).not.toBeNull();
+
+    title.value = "Họp nhóm";
+    title.dispatchEvent(new Event("input"));
+    expect(form.querySelector(".field__error")).toBeNull();
+    expect(title.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("names each missing time field separately", () => {
+    const form = renderForm(null, handlers());
+    const inputs = form.querySelectorAll<HTMLInputElement>("input");
+    inputs[0]!.value = "Có tiêu đề";
+    inputs[1]!.value = "";
+    inputs[2]!.value = "";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    const messages = [...form.querySelectorAll(".field__error")].map((n) => n.textContent);
+    expect(messages).toEqual([
+      "Vui lòng chọn thời gian bắt đầu.",
+      "Vui lòng chọn thời gian kết thúc.",
+    ]);
+  });
+
+  it("submits once every required field is filled in", () => {
+    const h = handlers();
+    const form = renderForm(schedule(), h);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(h.onSubmit).toHaveBeenCalledOnce();
+    expect(form.querySelector(".field__error")).toBeNull();
   });
 });
 

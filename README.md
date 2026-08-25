@@ -31,7 +31,8 @@ Calendar (tùy chọn, mặc định tắt).
 │   │   ├── config.py       # settings from environment / .env
 │   │   ├── db.py           # SQLAlchemy engine + session (SQLite)
 │   │   ├── models.py       # Schedule ORM model (instants stored in UTC)
-│   │   ├── schemas.py      # Pydantic schemas + timezone conversion
+│   │   ├── schemas.py      # Pydantic schemas + request/response shapes
+│   │   ├── timezones.py    # zone naming + wall-clock <-> instant conversion
 │   │   ├── holiday_calendar.py # public-holiday lookup (single source)
 │   │   ├── notifications.py    # when a reminder is due, and dispatching it
 │   │   ├── google_calendar.py  # Google Calendar integration (single source)
@@ -50,12 +51,14 @@ Calendar (tùy chọn, mặc định tắt).
 │   ├── requirements-dev.in # direct dev deps
 │   └── requirements-dev.txt# pinned dev lock file
 ├── frontend/               # Vite + TypeScript app
-│   └── src/
-│       ├── api.ts          # typed fetch client
-│       ├── types.ts        # Schedule types
-│       ├── format.ts       # timezone-aware datetime helpers
-│       ├── views.ts        # list / detail / form rendering
-│       └── main.ts         # app state + wiring
+│   ├── src/
+│   │   ├── api.ts          # typed fetch client
+│   │   ├── types.ts        # Schedule types
+│   │   ├── format.ts       # timezone-aware datetime helpers
+│   │   ├── views.ts        # list / detail / form rendering
+│   │   └── main.ts         # app state + wiring
+│   ├── e2e/                # Playwright specs (real browser)
+│   └── playwright.config.ts# starts a throwaway backend + Vite for e2e
 ├── data/                   # local SQLite files (contents not committed)
 ├── secrets/                # Google credentials (contents not committed)
 ├── docs/prompt-driven-log.md
@@ -140,9 +143,14 @@ Other frontend scripts:
 ```bash
 npm run typecheck            # tsc --noEmit
 npm run test                 # vitest (jsdom)
+npm run test:e2e             # Playwright (real browser, starts its own servers)
 npm run build                # type check + production build into frontend/dist
 npm run preview              # serve the production build
 ```
+
+`test:e2e` cần tải browser một lần: `npx playwright install chromium`. Nó tự khởi
+động backend (cổng 8917, database tạm trong `frontend/.e2e/`) và Vite (cổng 5917),
+nên không đụng tới `data/app.db` hay server đang chạy của bạn.
 
 ## API
 
@@ -228,6 +236,22 @@ curl -X POST http://127.0.0.1:8001/api/schedules -H 'Content-Type: application/j
   -d '{"title":"Saigon","start_time":"2026-12-15T16:30:00","end_time":"2026-12-15T17:30:00","timezone":"Asia/Saigon"}'
 # -> 409 Conflict
 ```
+
+### Danh sách lịch: sắp tới và đã qua
+
+Danh sách chia làm hai phần, dựa trên **thời điểm kết thúc**:
+
+* **Sắp tới** — lịch chưa kết thúc, sắp xếp theo thời gian tăng dần. Lịch đang
+  chạy (`bắt đầu <= bây giờ < kết thúc`) nằm ở đây kèm nhãn **Đang diễn ra**;
+  xếp nó vào "đã qua" chỉ vì đã bắt đầu thì sai hơn nhiều.
+* **Đã qua** — lịch đã kết thúc, gộp trong một khối thu gọn kèm số lượng, mới
+  nhất trước. Thu gọn vì phần này chỉ dài thêm theo thời gian và không phải lý do
+  người dùng mở trang.
+
+Nếu chưa có lịch nào thì hiện empty state như cũ; nếu chỉ còn lịch quá khứ thì
+phần "Sắp tới" nói rõ "Không có lịch nào sắp tới." Việc phân loại này hoàn toàn ở
+frontend và dựa trên instant thật, nên đúng ở mọi múi giờ đang xem; backend không
+đổi.
 
 ### Giới hạn thời lượng
 
@@ -476,7 +500,14 @@ cd backend && pytest && ruff check .
 
 # Frontend
 cd frontend && npm run typecheck && npm test
+
+# Frontend, trong browser thật (cần `npx playwright install chromium` một lần)
+cd frontend && npm run test:e2e
 ```
+
+Hai tầng test frontend làm hai việc khác nhau: **vitest (jsdom)** kiểm tra các hàm
+render tạo ra cái gì, còn **Playwright** kiểm tra những thứ chỉ trình duyệt thật
+mới có — validation gốc của form, bố cục ở một chiều rộng cụ thể, focus và bàn phím.
 
 ## Database
 
