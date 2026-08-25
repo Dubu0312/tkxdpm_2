@@ -19,6 +19,8 @@ import {
   renderForm,
   renderList,
   renderPlaceholder,
+  renderSkeleton,
+  renderToast,
   timezoneSelect,
 } from "./views";
 
@@ -43,6 +45,12 @@ interface State {
   limits: Limits | null;
   /** Whether Google Calendar syncing is available; null until loaded. */
   google: GoogleStatus | null;
+  /** A short confirmation of the last successful action. */
+  notice: string | null;
+  /** True while a delete is waiting for confirmation in the detail panel. */
+  confirmingDelete: boolean;
+  /** True while an action is in flight, so its buttons cannot be pressed twice. */
+  busy: boolean;
 }
 
 const state: State = {
@@ -55,6 +63,9 @@ const state: State = {
   countries: [],
   limits: null,
   google: null,
+  notice: null,
+  confirmingDelete: false,
+  busy: false,
 };
 
 const listSlot = document.querySelector<HTMLElement>("#list")!;
@@ -63,6 +74,19 @@ const errorSlot = document.querySelector<HTMLElement>("#error")!;
 const countSlot = document.querySelector<HTMLElement>("#count")!;
 const createButton = document.querySelector<HTMLButtonElement>("#create")!;
 const timezoneSlot = document.querySelector<HTMLElement>("#timezone")!;
+const toastSlot = document.querySelector<HTMLElement>("#toast")!;
+
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Show a short confirmation that clears itself. */
+function notify(message: string): void {
+  state.notice = message;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    state.notice = null;
+    render();
+  }, 4000);
+}
 
 function find(id: number): Schedule | undefined {
   return state.schedules.find((schedule) => schedule.id === id);
@@ -72,12 +96,27 @@ function setView(view: View): void {
   state.view = view;
   state.error = null;
   state.draft = null;
+  state.confirmingDelete = false;
   render();
+  revealPanel(view);
+}
+
+/**
+ * Below the two-column breakpoint the panel sits under the list, so opening a
+ * schedule would otherwise change something off-screen.
+ */
+function revealPanel(view: View): void {
+  if (view.name === "none") return;
+  if (typeof window.matchMedia !== "function") return;
+  if (!window.matchMedia("(max-width: 900px)").matches) return;
+  if (typeof panelSlot.scrollIntoView !== "function") return;
+  panelSlot.scrollIntoView({ block: "start" });
 }
 
 function fail(error: unknown, draft: ScheduleInput | null = null): void {
   state.error = error instanceof ApiError ? error : new ApiError(String(error), 0);
   state.draft = draft;
+  state.busy = false;
   render();
 }
 
@@ -153,6 +192,7 @@ async function submitCreate(input: ScheduleInput): Promise<void> {
   try {
     const created = await createSchedule(toPayload(input));
     state.schedules = await listSchedules();
+    notify(`Đã tạo lịch “${created.title}”.`);
     setView({ name: "detail", id: created.id });
   } catch (error) {
     fail(error, input);
@@ -164,8 +204,9 @@ async function submitEdit(id: number, input: ScheduleInput): Promise<void> {
   if (tooLongOrShort) return fail(tooLongOrShort, input);
 
   try {
-    await updateSchedule(id, toPayload(input));
+    const saved = await updateSchedule(id, toPayload(input));
     state.schedules = await listSchedules();
+    notify(`Đã lưu thay đổi cho “${saved.title}”.`);
     setView({ name: "detail", id });
   } catch (error) {
     fail(error, input);
@@ -173,10 +214,14 @@ async function submitEdit(id: number, input: ScheduleInput): Promise<void> {
 }
 
 async function syncGoogle(schedule: Schedule): Promise<void> {
+  state.busy = true;
+  render();
   try {
     await syncToGoogle(schedule.id);
     state.error = null;
     state.schedules = await listSchedules();
+    state.busy = false;
+    notify(`Đã đồng bộ “${schedule.title}” sang Google Calendar.`);
     render();
   } catch (error) {
     fail(error);
@@ -184,21 +229,28 @@ async function syncGoogle(schedule: Schedule): Promise<void> {
 }
 
 async function unlinkGoogle(schedule: Schedule): Promise<void> {
+  state.busy = true;
+  render();
   try {
     await unlinkFromGoogle(schedule.id);
     state.error = null;
     state.schedules = await listSchedules();
+    state.busy = false;
+    notify(`Đã bỏ liên kết Google của “${schedule.title}”.`);
     render();
   } catch (error) {
     fail(error);
   }
 }
 
-async function confirmDelete(schedule: Schedule): Promise<void> {
-  if (!window.confirm(`Xóa lịch “${schedule.title}”?`)) return;
+async function removeSchedule(schedule: Schedule): Promise<void> {
+  state.busy = true;
+  render();
   try {
     await deleteSchedule(schedule.id);
     state.schedules = await listSchedules();
+    state.busy = false;
+    notify(`Đã xóa lịch “${schedule.title}”.`);
     setView({ name: "none" });
   } catch (error) {
     fail(error);
@@ -242,17 +294,26 @@ function renderPanel(): HTMLElement {
         schedule,
         {
           onEdit: () => setView({ name: "edit", id: schedule.id }),
-          onDelete: () => void confirmDelete(schedule),
+          onDelete: () => {
+            state.confirmingDelete = true;
+            render();
+          },
+          onDeleteConfirm: () => void removeSchedule(schedule),
+          onDeleteCancel: () => {
+            state.confirmingDelete = false;
+            render();
+          },
           onGoogleSync: () => void syncGoogle(schedule),
           onGoogleUnlink: () => void unlinkGoogle(schedule),
         },
         state.viewTimezone,
         state.countries,
         state.google,
+        { confirmingDelete: state.confirmingDelete, busy: state.busy },
       );
     }
     default:
-      return renderPlaceholder("Chọn một lịch ở danh sách bên trái để xem chi tiết.");
+      return renderPlaceholder("Chọn một lịch trong danh sách để xem chi tiết.");
   }
 }
 
@@ -262,26 +323,28 @@ function render(): void {
 
   listSlot.replaceChildren(
     state.loading && state.schedules.length === 0
-      ? Object.assign(document.createElement("p"), {
-          className: "empty",
-          textContent: "Đang tải…",
-        })
+      ? renderSkeleton()
       : renderList(
           state.schedules,
           selectedId,
           (id) => setView({ name: "detail", id }),
           state.viewTimezone,
+          () => setView({ name: "create" }),
         ),
   );
 
   panelSlot.replaceChildren(renderPanel());
 
-  countSlot.textContent = `${state.schedules.length} lịch`;
+  countSlot.textContent = state.loading && state.schedules.length === 0
+    ? "Đang tải…"
+    : `${state.schedules.length} lịch`;
 
   errorSlot.replaceChildren(
     ...(state.error ? [renderError(state.error, state.viewTimezone, state.countries)] : []),
   );
   errorSlot.hidden = state.error === null;
+
+  toastSlot.replaceChildren(...(state.notice ? [renderToast(state.notice)] : []));
 }
 
 createButton.addEventListener("click", () => setView({ name: "create" }));

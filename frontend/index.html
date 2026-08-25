@@ -4,24 +4,46 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lịch hẹn — tkxdpm_2</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Quản lý lịch hẹn theo múi giờ, kiểm tra trùng lịch và ngày nghỉ."
+    />
+    <title>Lịch hẹn</title>
   </head>
   <body>
     <div id="app">
       <header class="topbar">
-        <h1>Lịch hẹn</h1>
-        <span id="count" class="count"></span>
-        <label class="tzpicker">
-          <span class="tzpicker__label">Xem theo</span>
-          <span id="timezone"></span>
-        </label>
-        <button id="create" class="btn btn--primary" type="button">Tạo lịch</button>
+        <div class="topbar__inner">
+          <div class="brand">
+            <span class="brand__mark" aria-hidden="true">L</span>
+            <span class="brand__text">
+              <h1>Lịch hẹn</h1>
+              <span class="brand__sub">Quản lý lịch theo múi giờ, tránh trùng giờ và ngày nghỉ</span>
+            </span>
+          </div>
+          <label class="tzpicker">
+            <span class="tzpicker__label">Xem theo</span>
+            <span id="timezone"></span>
+          </label>
+          <button id="create" class="btn btn--primary" type="button">Tạo lịch</button>
+        </div>
       </header>
+
       <div id="error" class="error" role="alert" hidden></div>
+
       <main class="layout">
-        <section id="list" class="column column--list" aria-label="Danh sách lịch"></section>
+        <section class="column column--list" aria-labelledby="list-title">
+          <div class="column__head">
+            <h2 class="column__title" id="list-title">Lịch sắp tới</h2>
+            <span id="count" class="count"></span>
+          </div>
+          <div id="list"></div>
+        </section>
         <section id="panel" class="column column--panel" aria-label="Chi tiết lịch"></section>
       </main>
+
+      <div id="toast" role="status" aria-live="polite"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

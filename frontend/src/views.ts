@@ -51,53 +51,100 @@ export function renderList(
   selectedId: number | null,
   onSelect: (id: number) => void,
   viewTimezone: string,
+  onCreate?: () => void,
 ): HTMLElement {
   const container = el("div", "list");
 
   if (schedules.length === 0) {
-    container.append(el("p", "empty", "Chưa có lịch nào. Bấm “Tạo lịch” để thêm."));
+    const state = el("div", "emptystate");
+    state.append(el("span", "emptystate__icon", "🗓"));
+    state.append(el("p", "emptystate__title empty", "Chưa có lịch nào"));
+    state.append(
+      el("p", "empty", "Tạo lịch đầu tiên để bắt đầu theo dõi thời gian của bạn."),
+    );
+    if (onCreate) {
+      const cta = el("button", "btn btn--primary btn--sm", "Tạo lịch");
+      cta.type = "button";
+      cta.addEventListener("click", onCreate);
+      state.append(cta);
+    }
+    container.append(state);
     return container;
   }
 
   for (const [day, items] of groupByDay(schedules, viewTimezone)) {
     container.append(el("h3", "day", formatDay(day)));
     for (const schedule of items) {
-      const card = el("button", "card");
-      card.type = "button";
-      if (schedule.id === selectedId) card.classList.add("card--active");
-      card.setAttribute("aria-current", schedule.id === selectedId ? "true" : "false");
-
-      const time = el(
-        "span",
-        "card__time",
-        `${formatTime(schedule.start_time, viewTimezone)} – ` +
-          `${formatTime(schedule.end_time, viewTimezone)}`,
-      );
-      // A schedule running past midnight would otherwise read as ending hours
-      // before it starts, so say how many days later the end time is.
-      const dayOffset = dayOffsetInZone(schedule.start_time, schedule.end_time, viewTimezone);
-      if (dayOffset > 0) {
-        const marker = el("span", "card__next-day", `+${dayOffset}`);
-        marker.title = `Kết thúc sau ${dayOffset} ngày`;
-        time.append(" ", marker);
-      }
-      card.append(time);
-      card.title = formatRange(schedule.start_time, schedule.end_time, viewTimezone);
-      card.append(el("span", "card__title", schedule.title));
-
-      const meta = [
-        schedule.location,
-        sameZone(schedule.timezone, viewTimezone) ? null : schedule.timezone,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      if (meta) card.append(el("span", "card__meta", meta));
-
-      card.addEventListener("click", () => onSelect(schedule.id));
-      container.append(card);
+      container.append(renderCard(schedule, selectedId, onSelect, viewTimezone));
     }
   }
   return container;
+}
+
+function renderCard(
+  schedule: Schedule,
+  selectedId: number | null,
+  onSelect: (id: number) => void,
+  viewTimezone: string,
+): HTMLElement {
+  const card = el("button", "card");
+  card.type = "button";
+  if (schedule.id === selectedId) card.classList.add("card--active");
+  card.setAttribute("aria-current", schedule.id === selectedId ? "true" : "false");
+  card.title = formatRange(schedule.start_time, schedule.end_time, viewTimezone);
+
+  // Start over end in a fixed-width gutter, so times line up down the list.
+  const time = el(
+    "span",
+    "card__time",
+    `${formatTime(schedule.start_time, viewTimezone)} – ` +
+      `${formatTime(schedule.end_time, viewTimezone)}`,
+  );
+  // A schedule running past midnight would otherwise read as ending hours
+  // before it starts, so say how many days later the end time is.
+  const dayOffset = dayOffsetInZone(schedule.start_time, schedule.end_time, viewTimezone);
+  if (dayOffset > 0) {
+    const marker = el("span", "card__next-day", `+${dayOffset}`);
+    marker.title = `Kết thúc sau ${dayOffset} ngày`;
+    time.append(" ", marker);
+  }
+  card.append(time);
+  card.append(el("span", "card__title", schedule.title));
+
+  const meta = [
+    schedule.location,
+    sameZone(schedule.timezone, viewTimezone) ? null : schedule.timezone,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (meta) card.append(el("span", "card__meta", meta));
+
+  const badges = el("div", "card__badges");
+  if (schedule.reminder_minutes !== null) {
+    badges.append(el("span", "badge", `Nhắc ${formatMinutes(schedule.reminder_minutes)}`));
+  }
+  if (schedule.country) badges.append(el("span", "badge", schedule.country));
+  if (schedule.google_event_id !== null) {
+    badges.append(
+      el(
+        "span",
+        schedule.google_out_of_date ? "badge badge--warning" : "badge badge--success",
+        schedule.google_out_of_date ? "Google · cần đồng bộ" : "Google",
+      ),
+    );
+  }
+  if (badges.childElementCount > 0) card.append(badges);
+
+  card.addEventListener("click", () => onSelect(schedule.id));
+  return card;
+}
+
+/** Placeholder cards while the first load is in flight. */
+export function renderSkeleton(count = 3): HTMLElement {
+  const box = el("div", "skeleton");
+  box.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < count; i++) box.append(el("div", "skeleton__card"));
+  return box;
 }
 
 /**
@@ -136,19 +183,53 @@ export function renderDetail(
   handlers: {
     onEdit: () => void;
     onDelete: () => void;
+    onDeleteConfirm?: () => void;
+    onDeleteCancel?: () => void;
     onGoogleSync?: () => void;
     onGoogleUnlink?: () => void;
   },
   viewTimezone: string,
   countries: Country[] = [],
   google: GoogleStatus | null = null,
+  options: { confirmingDelete?: boolean; busy?: boolean } = {},
 ): HTMLElement {
   const panel = el("article", "panel");
   panel.append(el("h2", undefined, schedule.title));
-  panel.append(
+
+  // Chips carry the at-a-glance facts; the list below carries the details.
+  const badges = el("div", "panel__badges");
+  badges.append(el("span", "badge", schedule.timezone));
+  if (schedule.country) {
+    badges.append(el("span", "badge", countryLabel(schedule.country, countries)));
+  }
+  if (schedule.reminder_minutes !== null) {
+    badges.append(
+      el(
+        "span",
+        schedule.notified_at !== null ? "badge badge--success" : "badge",
+        schedule.notified_at !== null
+          ? `Đã nhắc trước ${formatMinutes(schedule.reminder_minutes)}`
+          : `Nhắc trước ${formatMinutes(schedule.reminder_minutes)}`,
+      ),
+    );
+  }
+  if (google !== null && schedule.google_event_id !== null) {
+    badges.append(
+      el(
+        "span",
+        schedule.google_out_of_date ? "badge badge--warning" : "badge badge--success",
+        schedule.google_out_of_date ? "Google · cần đồng bộ lại" : "Google · đã đồng bộ",
+      ),
+    );
+  }
+  panel.append(badges);
+
+  // The "when" block: the single most important thing about a schedule.
+  const when = el("div", "when");
+  when.append(
     el("p", "panel__when", formatRange(schedule.start_time, schedule.end_time, viewTimezone)),
   );
-  panel.append(
+  when.append(
     el(
       "p",
       "panel__duration",
@@ -156,10 +237,9 @@ export function renderDetail(
         `Thời lượng: ${formatDuration(schedule.start_time, schedule.end_time)}`,
     ),
   );
-
   // The same instant shown in the timezone the schedule was created in.
   if (!sameZone(schedule.timezone, viewTimezone)) {
-    panel.append(
+    when.append(
       el(
         "p",
         "panel__origin",
@@ -168,17 +248,21 @@ export function renderDetail(
       ),
     );
   }
+  panel.append(when);
 
+  // Only rows that say something: a column of "—" is noise, not information.
   const facts = el("dl", "facts");
   const addFact = (label: string, value: string) => {
     facts.append(el("dt", undefined, label), el("dd", undefined, value));
   };
-  addFact("Nhắc trước", reminderSummary(schedule, viewTimezone));
-  addFact("Múi giờ", schedule.timezone);
-  addFact("Quốc gia", schedule.country ? countryLabel(schedule.country, countries) : "—");
-  addFact("Địa điểm", schedule.location || "—");
-  addFact("Mô tả", schedule.description || "—");
-  if (google !== null) addFact("Google Calendar", googleSummary(schedule, viewTimezone));
+  if (schedule.location) addFact("Địa điểm", schedule.location);
+  if (schedule.description) addFact("Mô tả", schedule.description);
+  if (schedule.reminder_minutes !== null) {
+    addFact("Nhắc trước", reminderSummary(schedule, viewTimezone));
+  }
+  if (google !== null && schedule.google_event_id !== null) {
+    addFact("Google Calendar", googleSummary(schedule, viewTimezone));
+  }
   addFact(
     "Tạo lúc",
     `${formatDate(schedule.created_at, viewTimezone)} ` +
@@ -189,28 +273,40 @@ export function renderDetail(
   const actions = el("div", "actions");
   const edit = el("button", "btn btn--primary", "Chỉnh sửa");
   edit.type = "button";
+  edit.disabled = options.busy === true;
   edit.addEventListener("click", handlers.onEdit);
-  const remove = el("button", "btn btn--danger", "Xóa");
-  remove.type = "button";
-  remove.addEventListener("click", handlers.onDelete);
-  actions.append(edit, remove);
+  actions.append(edit);
 
   if (google !== null && google.enabled) {
     const label = schedule.google_event_id === null ? "Đồng bộ Google" : "Đồng bộ lại";
     const sync = el("button", "btn", label);
     sync.type = "button";
+    sync.disabled = options.busy === true;
     if (handlers.onGoogleSync) sync.addEventListener("click", handlers.onGoogleSync);
     actions.append(sync);
 
     if (schedule.google_event_id !== null) {
       const unlink = el("button", "btn", "Bỏ liên kết");
       unlink.type = "button";
+      unlink.disabled = options.busy === true;
       if (handlers.onGoogleUnlink) unlink.addEventListener("click", handlers.onGoogleUnlink);
       actions.append(unlink);
     }
   }
 
+  // Destructive action sits apart from the rest.
+  actions.append(el("span", "actions__spacer"));
+  const remove = el("button", "btn btn--danger", "Xóa");
+  remove.type = "button";
+  remove.disabled = options.busy === true;
+  remove.addEventListener("click", handlers.onDelete);
+  actions.append(remove);
+
   panel.append(actions);
+
+  if (options.confirmingDelete) {
+    panel.append(renderDeleteConfirm(schedule, handlers));
+  }
 
   // Say why syncing is unavailable, or that this is only the stand-in mode,
   // rather than hiding the feature silently.
@@ -221,12 +317,52 @@ export function renderDetail(
   return panel;
 }
 
-function field(label: string, control: HTMLElement, hint?: string): HTMLElement {
+/** Asks in place, instead of handing the browser's own dialog to the user. */
+function renderDeleteConfirm(
+  schedule: Schedule,
+  handlers: { onDeleteConfirm?: () => void; onDeleteCancel?: () => void },
+): HTMLElement {
+  const box = el("div", "confirm");
+  box.append(
+    el("p", "confirm__text", `Xóa lịch “${schedule.title}”? Thao tác này không hoàn tác được.`),
+  );
+
+  const row = el("div", "confirm__actions");
+  const yes = el("button", "btn btn--danger btn--sm", "Xóa lịch này");
+  yes.type = "button";
+  if (handlers.onDeleteConfirm) yes.addEventListener("click", handlers.onDeleteConfirm);
+  const no = el("button", "btn btn--sm", "Giữ lại");
+  no.type = "button";
+  if (handlers.onDeleteCancel) no.addEventListener("click", handlers.onDeleteCancel);
+  row.append(yes, no);
+  box.append(row);
+  return box;
+}
+
+function field(
+  label: string,
+  control: HTMLElement,
+  hint?: string,
+  required = false,
+): HTMLElement {
   const wrapper = el("label", "field");
-  wrapper.append(el("span", "field__label", label));
-  wrapper.append(control);
+  const text = el("span", "field__label", label);
+  if (required) {
+    const mark = el("span", "field__required", "*");
+    mark.title = "Bắt buộc";
+    text.append(mark);
+  }
+  wrapper.append(text, control);
   if (hint) wrapper.append(el("span", "field__hint", hint));
   return wrapper;
+}
+
+/** A titled group of fields, so the form reads as sections not a long stack. */
+function section(legend: string, ...fields: HTMLElement[]): HTMLElement {
+  const box = el("fieldset", "form__section");
+  box.append(el("legend", "form__legend", legend));
+  box.append(...fields);
+  return box;
 }
 
 /** A <select> listing every IANA timezone, with `selected` preselected. */
@@ -343,6 +479,15 @@ export function renderForm(
   const values = initialValues(schedule, draft, defaultTimezone);
   const form = el("form", "panel form");
   form.append(el("h2", undefined, schedule ? "Chỉnh sửa lịch" : "Tạo lịch mới"));
+  form.append(
+    el(
+      "p",
+      "panel__note",
+      schedule
+        ? "Thay đổi được lưu khi bạn bấm “Lưu thay đổi”."
+        : "Các trường có dấu * là bắt buộc.",
+    ),
+  );
 
   const title = el("input");
   title.type = "text";
@@ -377,21 +522,29 @@ export function renderForm(
   const country = countrySelect(countries, values.country);
   const reminder = reminderSelect(values.reminder_minutes);
 
+  const times = el("div", "form__row");
+  times.append(field("Bắt đầu", start, undefined, true), field("Kết thúc", end, endHint(limits), true));
+
   form.append(
-    field("Tiêu đề *", title),
-    field("Múi giờ *", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này."),
-    field("Bắt đầu *", start),
-    field("Kết thúc *", end, endHint(limits)),
-    field("Nhắc trước", reminder, "Tính từ thời điểm bắt đầu của lịch."),
-    field("Quốc gia", country, "Không thể đặt lịch vào ngày nghỉ chính thức của quốc gia này."),
-    field("Địa điểm", location),
-    field("Mô tả", description),
+    field("Tiêu đề", title, undefined, true),
+    section(
+      "Thời gian",
+      field("Múi giờ", timezone, "Giờ nhập bên dưới được hiểu theo múi giờ này.", true),
+      times,
+      field("Nhắc trước", reminder, "Tính từ thời điểm bắt đầu của lịch."),
+    ),
+    section(
+      "Chi tiết",
+      field("Quốc gia", country, "Không thể đặt lịch vào ngày nghỉ chính thức của quốc gia này."),
+      field("Địa điểm", location),
+      field("Mô tả", description),
+    ),
   );
 
   const actions = el("div", "actions");
   const submit = el("button", "btn btn--primary", schedule ? "Lưu thay đổi" : "Tạo lịch");
   submit.type = "submit";
-  const cancel = el("button", "btn", "Hủy");
+  const cancel = el("button", "btn btn--ghost", "Hủy");
   cancel.type = "button";
   cancel.addEventListener("click", handlers.onCancel);
   actions.append(submit, cancel);
@@ -425,12 +578,56 @@ export function renderForm(
   return form;
 }
 
+/** The resting state of the detail column: quiet, centred, no direction claimed. */
 export function renderPlaceholder(text: string): HTMLElement {
   const panel = el("article", "panel panel--placeholder");
-  panel.append(el("p", "empty", text));
+  const state = el("div", "emptystate");
+  state.append(el("p", "empty", text));
+  panel.append(state);
   return panel;
 }
 
+/**
+ * Turns a backend message into something a user can act on.
+ *
+ * The API answers in English and sometimes in pydantic's wording; only those
+ * known phrasings are translated, anything already written for people (and any
+ * message this frontend produced) passes through untouched.
+ */
+export function friendlyMessage(error: ApiError): { text: string; hint?: string } {
+  const raw = error.message;
+
+  if (raw.includes("end_time must be after start_time")) {
+    return { text: "Thời gian kết thúc phải sau thời gian bắt đầu." };
+  }
+  if (raw.includes("Schedule not found")) {
+    return { text: "Lịch này không còn tồn tại. Có thể nó đã bị xóa ở nơi khác." };
+  }
+  if (raw.includes("Unknown timezone")) {
+    return { text: "Múi giờ không hợp lệ. Hãy chọn lại trong danh sách." };
+  }
+  if (raw.includes("Unknown country")) {
+    return { text: "Quốc gia không hợp lệ. Hãy chọn lại trong danh sách." };
+  }
+  if (raw.includes("String should have at least 1 character")) {
+    return { text: "Vui lòng nhập tiêu đề cho lịch." };
+  }
+  if (raw.includes("String should have at most")) {
+    return { text: "Nội dung nhập vào dài quá mức cho phép." };
+  }
+  if (error.status === 503) {
+    return { text: "Chưa bật đồng bộ Google Calendar.", hint: raw };
+  }
+  if (error.status >= 500) {
+    return { text: "Máy chủ đang gặp sự cố. Hãy thử lại sau ít phút.", hint: raw };
+  }
+  return { text: raw };
+}
+
+/** A short confirmation of something that just succeeded. */
+export function renderToast(message: string): HTMLElement {
+  return el("div", "toast", message);
+}
 
 export function renderError(
   error: ApiError,
@@ -441,7 +638,9 @@ export function renderError(
   const detail = error.detail;
 
   if (detail === null) {
-    box.append(el("p", "error__text", error.message));
+    const friendly = friendlyMessage(error);
+    box.append(el("p", "error__text", friendly.text));
+    if (friendly.hint) box.append(el("p", "error__hint", friendly.hint));
     return box;
   }
 
@@ -524,3 +723,4 @@ export function renderError(
   );
   return box;
 }
+

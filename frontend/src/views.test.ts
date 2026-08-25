@@ -5,6 +5,9 @@ import { ApiError } from "./api";
 import {
   countryLabel,
   countrySelect,
+  friendlyMessage,
+  renderSkeleton,
+  renderToast,
   googleSummary,
   reminderSelect,
   reminderSummary,
@@ -17,6 +20,18 @@ import {
 
 const TOKYO = "Asia/Tokyo";
 const SAIGON = "Asia/Ho_Chi_Minh";
+
+/** The value of a detail fact row, looked up by its label. */
+function fact(panel: HTMLElement, label: string): string | null {
+  const terms = [...panel.querySelectorAll("dt")];
+  const index = terms.findIndex((dt) => dt.textContent === label);
+  return index === -1 ? null : ([...panel.querySelectorAll("dd")][index]?.textContent ?? null);
+}
+
+/** Text of every badge chip in a panel. */
+function badges(panel: HTMLElement): string[] {
+  return [...panel.querySelectorAll(".panel__badges .badge")].map((b) => b.textContent ?? "");
+}
 
 function schedule(overrides: Partial<Schedule> = {}): Schedule {
   return {
@@ -98,17 +113,21 @@ describe("renderDetail", () => {
     expect(onDelete).toHaveBeenCalledOnce();
   });
 
-  it("falls back to a dash for empty optional fields", () => {
+  it("leaves out rows for fields that are empty", () => {
     const node = renderDetail(
       schedule({ location: null, description: null }),
       { onEdit: () => {}, onDelete: () => {} },
       TOKYO,
     );
-    // Facts are reminder, timezone, country, then the two optional fields.
-    expect([...node.querySelectorAll("dd")].map((dd) => dd.textContent).slice(3, 5)).toEqual([
-      "—",
-      "—",
-    ]);
+    expect(fact(node, "Địa điểm")).toBeNull();
+    expect(fact(node, "Mô tả")).toBeNull();
+    expect(fact(node, "Tạo lúc")).not.toBeNull();
+  });
+
+  it("keeps the rows for fields that have a value", () => {
+    const node = renderDetail(schedule(), { onEdit: () => {}, onDelete: () => {} }, TOKYO);
+    expect(fact(node, "Địa điểm")).toBe("Phòng A1");
+    expect(fact(node, "Mô tả")).toBe("Review sprint");
   });
 });
 
@@ -353,13 +372,13 @@ describe("country selection", () => {
     expect(onSubmit.mock.calls[0]![0].country).toBeNull();
   });
 
-  it("shows the country in the detail panel", () => {
+  it("shows the country as a chip in the detail panel", () => {
     const handlers = { onEdit: () => {}, onDelete: () => {} };
     const withCountry = renderDetail(schedule({ country: "VN" }), handlers, TOKYO, COUNTRIES);
-    expect([...withCountry.querySelectorAll("dd")][2]!.textContent).toBe("Vietnam (VN)");
+    expect(badges(withCountry)).toContain("Vietnam (VN)");
 
     const without = renderDetail(schedule(), handlers, TOKYO, COUNTRIES);
-    expect([...without.querySelectorAll("dd")][2]!.textContent).toBe("—");
+    expect(badges(without)).not.toContain("Vietnam (VN)");
   });
 });
 
@@ -624,10 +643,19 @@ describe("reminders", () => {
     expect(reminderSummary(schedule(), SAIGON)).toBe("—");
   });
 
-  it("puts the reminder first in the detail panel facts", () => {
+  it("shows the reminder both as a chip and as a detail row", () => {
     const panel = renderDetail(withReminder(), { onEdit: () => {}, onDelete: () => {} }, SAIGON);
-    expect([...panel.querySelectorAll("dt")][0]!.textContent).toBe("Nhắc trước");
-    expect([...panel.querySelectorAll("dd")][0]!.textContent).toContain("30 phút trước");
+    expect(badges(panel)).toContain("Nhắc trước 30 phút");
+    expect(fact(panel, "Nhắc trước")).toContain("30 phút trước");
+  });
+
+  it("says so on the chip once the reminder has gone out", () => {
+    const panel = renderDetail(
+      withReminder({ notified_at: "2026-05-10T01:30:00+00:00" }),
+      { onEdit: () => {}, onDelete: () => {} },
+      SAIGON,
+    );
+    expect(badges(panel)).toContain("Đã nhắc trước 30 phút");
   });
 
   it("handles a reminder that falls on the previous local day", () => {
@@ -765,5 +793,144 @@ describe("Google Calendar in the detail panel", () => {
     buttons.find((b) => b.textContent === "Bỏ liên kết")!.click();
     expect(onGoogleSync).toHaveBeenCalledOnce();
     expect(onGoogleUnlink).toHaveBeenCalledOnce();
+  });
+});
+
+describe("empty, loading and placeholder states", () => {
+  it("invites the user to create the first schedule", () => {
+    const onCreate = vi.fn();
+    const node = renderList([], null, () => {}, TOKYO, onCreate);
+
+    expect(node.querySelector(".empty")?.textContent).toContain("Chưa có lịch nào");
+    const cta = node.querySelector<HTMLButtonElement>(".emptystate .btn")!;
+    expect(cta.textContent).toBe("Tạo lịch");
+    cta.click();
+    expect(onCreate).toHaveBeenCalledOnce();
+  });
+
+  it("leaves out the call to action when there is nothing to call", () => {
+    const node = renderList([], null, () => {}, TOKYO);
+    expect(node.querySelector(".emptystate .btn")).toBeNull();
+  });
+
+  it("shows placeholder cards while loading, hidden from screen readers", () => {
+    const node = renderSkeleton(3);
+    expect(node.querySelectorAll(".skeleton__card")).toHaveLength(3);
+    expect(node.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+describe("badges on the list", () => {
+  const chips = (node: HTMLElement) =>
+    [...node.querySelectorAll(".card__badges .badge")].map((b) => b.textContent);
+
+  it("shows nothing extra for a plain schedule", () => {
+    const node = renderList([schedule()], null, () => {}, TOKYO);
+    expect(node.querySelector(".card__badges")).toBeNull();
+  });
+
+  it("flags a reminder, a country and a Google link", () => {
+    const node = renderList(
+      [schedule({ reminder_minutes: 30, country: "VN", google_event_id: "tkdpm1" })],
+      null,
+      () => {},
+      TOKYO,
+    );
+    expect(chips(node)).toEqual(["Nhắc 30 phút", "VN", "Google"]);
+  });
+
+  it("warns on the card when a synced schedule has drifted", () => {
+    const node = renderList(
+      [schedule({ google_event_id: "tkdpm1", google_out_of_date: true })],
+      null,
+      () => {},
+      TOKYO,
+    );
+    expect(chips(node)).toEqual(["Google · cần đồng bộ"]);
+    expect(node.querySelector(".card__badges .badge--warning")).not.toBeNull();
+  });
+});
+
+describe("deleting asks in the panel", () => {
+  const handlers = { onEdit: () => {}, onDelete: () => {} };
+
+  it("does not show the confirmation until it is asked for", () => {
+    const panel = renderDetail(schedule(), handlers, TOKYO);
+    expect(panel.querySelector(".confirm")).toBeNull();
+  });
+
+  it("names the schedule and warns that it cannot be undone", () => {
+    const panel = renderDetail(schedule(), handlers, TOKYO, [], null, { confirmingDelete: true });
+    const text = panel.querySelector(".confirm__text")?.textContent ?? "";
+    expect(text).toContain("Họp nhóm");
+    expect(text).toContain("không hoàn tác");
+  });
+
+  it("reports confirm and cancel separately", () => {
+    const onDeleteConfirm = vi.fn();
+    const onDeleteCancel = vi.fn();
+    const panel = renderDetail(
+      schedule(),
+      { ...handlers, onDeleteConfirm, onDeleteCancel },
+      TOKYO,
+      [],
+      null,
+      { confirmingDelete: true },
+    );
+    const buttons = [...panel.querySelectorAll<HTMLButtonElement>(".confirm__actions .btn")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Xóa lịch này", "Giữ lại"]);
+    buttons[0]!.click();
+    buttons[1]!.click();
+    expect(onDeleteConfirm).toHaveBeenCalledOnce();
+    expect(onDeleteCancel).toHaveBeenCalledOnce();
+  });
+
+  it("disables the actions while one is in flight", () => {
+    const panel = renderDetail(schedule(), handlers, TOKYO, [], null, { busy: true });
+    const buttons = [...panel.querySelectorAll<HTMLButtonElement>(".actions .btn")];
+    expect(buttons.every((b) => b.disabled)).toBe(true);
+  });
+});
+
+describe("friendly error messages", () => {
+  const apiError = (message: string, status = 400) => new ApiError(message, status);
+
+  it("rewrites the backend's wording into something actionable", () => {
+    expect(friendlyMessage(apiError("Value error, end_time must be after start_time", 422)).text)
+      .toBe("Thời gian kết thúc phải sau thời gian bắt đầu.");
+    expect(friendlyMessage(apiError("Schedule not found", 404)).text).toContain(
+      "không còn tồn tại",
+    );
+    expect(friendlyMessage(apiError("Unknown timezone: 'Mars/Olympus'", 422)).text).toContain(
+      "Múi giờ không hợp lệ",
+    );
+    expect(friendlyMessage(apiError("Unknown country: 'XX'", 422)).text).toContain(
+      "Quốc gia không hợp lệ",
+    );
+  });
+
+  it("keeps the technical detail as a secondary line", () => {
+    const off = friendlyMessage(apiError("Google Calendar integration is disabled…", 503));
+    expect(off.text).toBe("Chưa bật đồng bộ Google Calendar.");
+    expect(off.hint).toContain("disabled");
+
+    const broken = friendlyMessage(apiError("Yêu cầu thất bại (HTTP 500)", 500));
+    expect(broken.text).toContain("Máy chủ đang gặp sự cố");
+  });
+
+  it("passes through a message that is already written for people", () => {
+    const message = "Không kết nối được backend tại http://127.0.0.1:8001";
+    expect(friendlyMessage(apiError(message, 0)).text).toBe(message);
+  });
+
+  it("is what the error panel renders", () => {
+    const node = renderError(new ApiError("Schedule not found", 404), TOKYO, COUNTRIES);
+    expect(node.querySelector(".error__text")?.textContent).toContain("không còn tồn tại");
+  });
+});
+
+describe("renderToast", () => {
+  it("carries the message", () => {
+    expect(renderToast("Đã tạo lịch.").textContent).toBe("Đã tạo lịch.");
   });
 });

@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+/** The same landmarks index.html provides. */
 function shell() {
   document.body.innerHTML = `
     <div id="app">
@@ -11,6 +12,7 @@ function shell() {
       <button id="create" type="button">Tạo lịch</button></header>
       <div id="error" hidden></div>
       <main><section id="list"></section><section id="panel"></section></main>
+      <div id="toast" role="status"></div>
     </div>`;
 }
 
@@ -138,5 +140,134 @@ describe("the normal startup path still works", () => {
 
     expect(document.querySelector("#error")!.textContent).toContain("Lịch quá ngắn");
     expect(fetchMock.mock.calls.length).toBe(callsBefore); // nothing was sent
+  });
+});
+
+describe("feedback on the main flows", () => {
+  const schedule = (overrides = {}) => ({
+    id: 1,
+    title: "Họp nhóm",
+    description: null,
+    location: null,
+    start_time: "2026-09-01T09:00:00+07:00",
+    end_time: "2026-09-01T10:00:00+07:00",
+    timezone: "Asia/Saigon",
+    country: null,
+    reminder_minutes: null,
+    notify_at: null,
+    notified_at: null,
+    google_event_id: null,
+    google_calendar_id: null,
+    google_synced_at: null,
+    google_out_of_date: false,
+    created_at: "2026-08-25T00:00:00+00:00",
+    updated_at: "2026-08-25T00:00:00+00:00",
+    ...overrides,
+  });
+
+  /** Backend that answers startup calls and records writes. */
+  function backend(schedules: unknown[]) {
+    const state = { schedules: [...schedules] };
+    const fn = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes("/api/countries")) return json([{ code: "VN", name: "Vietnam" }]);
+      if (url.includes("/api/config/google"))
+        return json({ mode: "memory", enabled: true, calendar_id: "primary", detail: null });
+      if (url.includes("/api/config"))
+        return json({ min_duration_minutes: 15, max_duration_minutes: 10080, default_timezone: "Asia/Saigon" });
+      if (init?.method === "DELETE") {
+        state.schedules = [];
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (init?.method === "POST" && url.includes("/google")) return json(schedule({ google_event_id: "tkdpm1" }));
+      return json(state.schedules);
+    });
+    return fn;
+  }
+
+  it("shows a skeleton while the first load is in flight", async () => {
+    let release: (v: unknown) => void = () => {};
+    const held = new Promise((r) => (release = r));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/api/countries")) {
+          await held;
+          return new Response("[]", { status: 200 });
+        }
+        return new Response("[]", { status: 200 });
+      }),
+    );
+    await import("./main");
+    await settle(30);
+
+    expect(document.querySelector("#list")!.querySelector(".skeleton")).not.toBeNull();
+    expect(document.querySelector("#count")!.textContent).toBe("Đang tải…");
+    release(null);
+    await settle();
+    expect(document.querySelector("#list")!.querySelector(".skeleton")).toBeNull();
+  });
+
+  it("confirms a delete in the panel rather than with a browser dialog", async () => {
+    const confirmSpy = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmSpy);
+    vi.stubGlobal("fetch", backend([schedule()]));
+    await import("./main");
+    await settle();
+
+    const panel = document.querySelector("#panel")!;
+    document.querySelector<HTMLButtonElement>(".card")!.click();
+    await settle(30);
+
+    const remove = [...panel.querySelectorAll<HTMLButtonElement>(".actions .btn")].find(
+      (b) => b.textContent === "Xóa",
+    )!;
+    remove.click();
+    await settle(30);
+
+    // The browser dialog is never used, and the panel asks instead.
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(panel.querySelector(".confirm__text")?.textContent).toContain("Họp nhóm");
+
+    panel.querySelector<HTMLButtonElement>(".confirm__actions .btn")!.click();
+    await settle();
+
+    expect(document.querySelector("#toast")!.textContent).toContain("Đã xóa lịch");
+    expect(document.querySelector("#list")!.textContent).toContain("Chưa có lịch nào");
+  });
+
+  it("keeps the schedule when the confirmation is dismissed", async () => {
+    vi.stubGlobal("fetch", backend([schedule()]));
+    await import("./main");
+    await settle();
+
+    const panel = document.querySelector("#panel")!;
+    document.querySelector<HTMLButtonElement>(".card")!.click();
+    await settle(30);
+    [...panel.querySelectorAll<HTMLButtonElement>(".actions .btn")]
+      .find((b) => b.textContent === "Xóa")!
+      .click();
+    await settle(30);
+    [...panel.querySelectorAll<HTMLButtonElement>(".confirm__actions .btn")]
+      .find((b) => b.textContent === "Giữ lại")!
+      .click();
+    await settle(30);
+
+    expect(panel.querySelector(".confirm")).toBeNull();
+    expect(panel.querySelector("h2")?.textContent).toBe("Họp nhóm");
+  });
+
+  it("confirms a Google sync with a toast", async () => {
+    vi.stubGlobal("fetch", backend([schedule()]));
+    await import("./main");
+    await settle();
+
+    document.querySelector<HTMLButtonElement>(".card")!.click();
+    await settle(30);
+    [...document.querySelectorAll<HTMLButtonElement>("#panel .actions .btn")]
+      .find((b) => b.textContent === "Đồng bộ Google")!
+      .click();
+    await settle();
+
+    expect(document.querySelector("#toast")!.textContent).toContain("Đã đồng bộ");
   });
 });

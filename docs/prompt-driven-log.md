@@ -1224,3 +1224,124 @@ chúng là thêm feature hoặc đổi kiến trúc:
    lọc trong Python — cùng một giới hạn về quy mô dữ liệu.
 7. **Cảnh báo deprecation** của Starlette TestClient (`httpx` → `httpx2`) vẫn còn.
 8. Danh sách chọn múi giờ (~420 mục) và quốc gia (250 mục) vẫn chưa có tìm kiếm.
+
+---
+
+## Round 10 — Improve application UI and UX
+
+**Ngày:** 2026-08-25
+**Commit:** `round 10: improve application UI and UX`
+
+### Yêu cầu
+
+Cải thiện frontend cho hiện đại, chuyên nghiệp, rõ ràng, dễ dùng: bố cục, typography,
+spacing, hierarchy, form, danh sách, chi tiết, các action, trạng thái loading/empty/
+success/error, thông báo lỗi thân thiện, responsive, interaction vừa phải. Không đổi
+business logic, không đổi API contract, không thêm feature, không over-engineer.
+
+### Review UI/UX hiện trạng
+
+Đọc lại toàn bộ frontend rồi liệt kê điểm yếu cụ thể, không sửa theo cảm tính:
+
+1. **Không có phản hồi thành công nào.** Tạo, sửa, xóa, đồng bộ đều im lặng; kênh
+   phản hồi duy nhất là banner lỗi.
+2. **`window.confirm` cho thao tác xóa** — hộp thoại hệ điều hành, lạc lõng.
+3. **Panel chi tiết là một `<dl>` phẳng 7 dòng cùng trọng số**, kể cả các dòng "—"
+   cho trường rỗng; thời gian (thứ quan trọng nhất) chỉ là một dòng chữ thường.
+4. **Form 8 trường xếp thẳng**, không nhóm, dấu `*` gõ thẳng vào nhãn.
+5. **Empty state một câu**, không có lối đi tiếp.
+6. **Loading chỉ là chữ "Đang tải…"**; nút bấm không có trạng thái đang xử lý.
+7. **Một số thông báo lỗi còn là tiếng Anh của backend** (`Schedule not found`,
+   `Value error, end_time must be after start_time`).
+8. **Chỉ một breakpoint**, và trên màn hình hẹp chọn lịch không đưa panel vào tầm nhìn.
+9. **Thẻ lịch không thể hiện** lịch có nhắc / có quốc gia / đã đồng bộ Google.
+10. Không có hover/focus/transition nào.
+
+### Đã cải thiện
+
+**Hệ thống thị giác** — viết lại `style.css` thành một design system nhỏ: token màu
+(neutral, brand, success/danger/warning), thang spacing, radius, shadow, type scale;
+đủ cả light và dark. Mọi component dùng chung token, nên giao diện nhất quán.
+
+**App shell** — header dính (sticky) có brand mark, tiêu đề và một dòng mô tả app;
+ô chọn múi giờ và nút "Tạo lịch" nằm cùng hàng; cột danh sách có tiêu đề riêng và
+số lượng; vùng toast riêng có `role="status"`.
+
+**Danh sách** — thẻ lịch chuyển sang bố cục hai cột: cột giờ cố định bề rộng (giờ
+thẳng hàng suốt danh sách, có vạch ngăn) và cột nội dung; thêm hàng badge cho
+nhắc trước / quốc gia / trạng thái Google (badge cảnh báo khi lịch đã đổi sau lần
+đồng bộ cuối). Nhãn `+1` cho lịch qua nửa đêm thành chip.
+
+**Chi tiết** — tiêu đề, hàng chip tóm tắt (múi giờ, quốc gia, nhắc, Google), rồi
+**khối "khi nào"** nổi bật vì đó là thứ người ta cần trước tiên, sau đó mới tới các
+dòng chi tiết. **Chỉ hiện dòng nào có nội dung** — một cột toàn "—" là nhiễu chứ
+không phải thông tin. Nút xóa tách sang phải, khỏi nhóm hành động thường.
+
+**Form** — chia thành nhóm "Thời gian" và "Chi tiết" có tiêu đề; hai ô bắt đầu/kết
+thúc đặt cạnh nhau; dấu bắt buộc thành phần tử riêng có tooltip thay vì gõ vào nhãn;
+thêm dòng dẫn nhập dưới tiêu đề form.
+
+**Trạng thái** — skeleton khi tải lần đầu (thay chữ "Đang tải…"), empty state có
+icon + lời mời + nút "Tạo lịch", toast xác nhận sau mỗi thao tác thành công (tự tắt
+sau 4 giây), nút bị vô hiệu hóa khi thao tác đang chạy.
+
+**Xóa** — hỏi ngay trong panel bằng một khối cảnh báo có "Xóa lịch này" / "Giữ lại",
+bỏ hẳn `window.confirm`.
+
+**Thông báo lỗi** — thêm `friendlyMessage()` dịch các cách diễn đạt đã biết của
+backend sang tiếng Việt hành động được ("Thời gian kết thúc phải sau thời gian bắt
+đầu.", "Lịch này không còn tồn tại…"), giữ chi tiết kỹ thuật làm dòng phụ cho lỗi
+5xx và 503. Thông điệp vốn đã viết cho người dùng thì đi thẳng qua, không bị dịch lại.
+
+**Responsive** — hai breakpoint (900px gộp cột, 560px thu gọn header, ẩn nhãn phụ,
+facts xuống một cột, nút hành động giãn đều); trên màn hình hẹp, chọn một lịch sẽ
+cuộn panel vào tầm nhìn.
+
+### Ba lỗi giao diện phát hiện **nhờ chụp màn hình thật**
+
+Chrome có sẵn trên máy nên tôi chụp giao diện thật và tự xem, thay vì chỉ đọc CSS:
+
+1. **Panel rỗng có hai khung viền lồng nhau** — `.panel--placeholder` và
+   `.emptystate` bên trong đều vẽ viền.
+2. **Ô "Bắt đầu" cao gấp đôi ô "Kết thúc"** — ô bên cạnh có hint 2 dòng, mà grid
+   item mặc định `stretch` nên input bị kéo giãn theo.
+3. **Banner lỗi co lại theo nội dung rồi tự căn giữa** thay vì thẳng hàng với layout
+   — `#app` là flex column, `margin: auto` trên flex item làm co item lại.
+
+Không lỗi nào trong ba lỗi này lộ ra qua test hay qua đọc code; chỉ nhìn mới thấy.
+Ảnh sau khi sửa xác nhận cả ba đã hết. Ngoài ra ảnh mobile lộ một lỗi nội dung:
+placeholder ghi "danh sách **bên trái**" trong khi ở màn hình hẹp panel nằm **bên
+dưới** — đã sửa thành câu không nói hướng.
+
+### Các check đã chạy
+
+| Check | Lệnh | Kết quả |
+| --- | --- | --- |
+| Frontend typecheck | `npm run typecheck` | Sạch (strict) |
+| Frontend test | `npm test` | **139 passed** (120 cũ + 19 mới cho các hành vi UI mới) |
+| Frontend build | `npm run build` | Built OK (CSS 11.6 kB / 3.1 kB gzip, JS 20.5 kB / 7.2 kB gzip) |
+| Backend lint | `ruff check backend` | All checks passed |
+| Backend test | `pytest` | **222 passed** — không đụng tới backend, không regression |
+| **Luồng chính trên markup thật** | UI thật (đọc từ `index.html`) → backend thật | **1 passed**: empty state → mở form (đúng 2 nhóm, 4 dấu bắt buộc) → tạo lịch → toast "Đã tạo lịch" → thẻ hiện giờ + badge nhắc → panel hiện khối "khi nào" và **không** hiện dòng rỗng → đồng bộ Google → toast + chip "đã đồng bộ" → lưu lịch quá ngắn bị chặn, thông báo rõ, form giữ nguyên dữ liệu → sửa lại và lưu được → xóa hỏi trong panel, "Giữ lại" hủy được, "Xóa lịch này" xóa thật |
+| **Kiểm tra bằng mắt** | Chrome headless, ảnh thật | desktop 1280×900 (sáng và tối), form, panel chi tiết, hộp xác nhận xóa, mobile 390×844 |
+
+Test frontend mới phủ: empty state có/không có CTA, skeleton ẩn khỏi screen reader,
+badge trên thẻ (không có gì / nhắc + quốc gia + Google / cảnh báo lệch), xác nhận
+xóa trong panel (hiện đúng lúc, đúng nội dung, hai nút tách biệt), nút bị khóa khi
+bận, `friendlyMessage` cho từng nhóm lỗi, toast, và bốn luồng chạy qua `main.ts`
+thật (skeleton lúc tải, xóa không dùng hộp thoại trình duyệt, hủy xác nhận, toast
+sau khi đồng bộ Google).
+
+### Giới hạn và vấn đề còn tồn tại
+
+1. **Không có bộ test tự động cho phần nhìn** (visual regression). Ảnh chụp là kiểm
+   tra thủ công một lần trong round này, không được giữ lại để so sánh về sau.
+2. **Ô chọn múi giờ (~420 mục) và quốc gia (250 mục) vẫn là `<select>` thuần**, chưa
+   có tìm kiếm — làm combobox có lọc là thêm hẳn một component, vượt mức "không
+   over-engineer" của round này.
+3. **Chưa có chế độ xem lịch dạng lưới tuần/tháng** — vẫn là danh sách theo ngày.
+   Lịch qua nửa đêm vì thế vẫn chỉ nằm ở ngày bắt đầu (đã ghi từ Round 5).
+4. **Toast chỉ hiện một thông báo tại một thời điểm**; thao tác dồn dập sẽ ghi đè
+   thông báo trước.
+5. **Người dùng không đổi được light/dark** — giao diện đi theo thiết lập hệ thống.
+6. Các mục tồn đọng về chức năng từ Round 1–9 vẫn giữ nguyên.
